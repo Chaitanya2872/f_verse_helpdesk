@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: ${HELPDESK_DB_URL}
+    username: ${HELPDESK_DB_USERNAME}
+    password: ${HELPDESK_DB_PASSWORD}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}

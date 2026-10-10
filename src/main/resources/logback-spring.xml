@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Dev: human-readable console output, correlation id inline via MDC. -->
+    <springProfile name="dev">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+                <pattern>%d{HH:mm:ss.SSS} %-5level [%thread] %X{correlationId} %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- prod / default (no profile active): structured JSON output. MDC entries
+         (correlation id in particular - see CorrelationIdFilter) are included
+         automatically by LogstashEncoder. -->
+    <springProfile name="!dev">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder"/>
+        </appender>
+    </springProfile>
+
+    <!-- Package-level overrides (e.g. logging.level.com.erp.ticketing) are applied
+         by Spring Boot's LoggingSystem from application*.yml regardless of this
+         file; no logger-specific level is hardcoded here so those overrides are
+         never shadowed. -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

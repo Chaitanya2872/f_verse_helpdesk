@@ -1,0 +1,48 @@
+server:
+  # Access tokens carry every permission key plus its scope; an admin's is ~10 KB, over the 8 KB default.
+  max-http-request-header-size: ${MAX_HTTP_REQUEST_HEADER_SIZE:64KB}
+  port: ${SERVER_PORT:8096}
+
+spring:
+  application:
+    name: helpdesk-service
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:8761/eureka/}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+app:
+  security:
+    jwt:
+      # RS256 public key from identity-service - the same default every other
+      # service and the gateway verify with. identity tokens are the only ones
+      # the web app sends; see IdentityTokenVerifier.
+      public-key: ${JWT_PUBLIC_KEY:MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz4woDjpjkAC+DcXp1cEWG0xuQ/EdwhfzVpw4NEFR0AkfUosjwvJkv2XsBR8HQEhZQ4DIIX1xS/+iYVLIyXfzP9jh19aFScbpQYSKmEc7cBAk817DQ4x8amWBC5DAVuxa/2LC81g6ypYPLNkC+uVX3LGFeswsLsapEw3RrFlSlOCO2R7PWMmwNmwSisxQfjZc7Hku7Idkty3Qvct0yJ63lSaI+5s1WXMZxVQiK4ygoekpy/MMo+fukn7j1XcdW7P6q6BlxbjJybeNRtQLaezcTyRTlRpwmO3U3kKC1lnBH3yt83YwzrDtoW6180us93+J15df3podnoIbPJHfWueuwQIDAQAB}
+  jwt:
+    # The service's own HS256 tokens (JwtService) - only the integration tests
+    # mint these now. 8 hours. app.jwt.secret has no default here - each profile
+    # (dev/test/prod) must supply its own signing key.
+    expiration-ms: 28800000
+  attachments:
+    storage-dir: ${HELPDESK_ATTACHMENTS_DIR:./data/attachments}
+  sla:
+    monitoring:
+      enabled: true
+      fixed-delay-ms: 60000
+  notifications:
+    email-enabled: false

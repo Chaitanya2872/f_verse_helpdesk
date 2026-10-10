@@ -1,0 +1,31 @@
+# Maven build output (compiled classes, jars, test reports)
+target/
+*.jar
+*.war
+*.class
+
+# Runtime data: uploaded ticket attachments (app.attachments.storage-dir)
+data/
+
+# Logs
+*.log
+logs/
+hs_err_pid*.log
+
+# Local environment overrides
+.env
+.env.*
+application-*-local.yml
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db

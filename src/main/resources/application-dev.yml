@@ -1,0 +1,30 @@
+# Dev profile: no reverse proxy / ERP available locally.
+# The datasource values below are placeholders - override them (e.g. via env vars,
+# a local application-dev-local.yml, or -D system properties) to point at your own
+# local PostgreSQL instance if these defaults don't match your setup.
+spring:
+  datasource:
+    url: ${HELPDESK_DB_URL:jdbc:postgresql://localhost:5432/ticketing}
+    username: ${HELPDESK_DB_USERNAME:postgres}
+    password: ${HELPDESK_DB_PASSWORD:postgres}
+  # Placeholder SMTP settings - no real mail server is reachable in this dev
+  # environment. This exists only so Spring Boot's MailSenderAutoConfiguration
+  # (which requires spring.mail.host to be set at all) actually creates a
+  # JavaMailSender bean; it is never used for real sending because
+  # app.notifications.email-enabled is false below. Spring Boot's mail
+  # autoconfiguration does not test connectivity at startup, so this is safe
+  # even though localhost:1025 has nothing listening.
+  mail:
+    host: localhost
+    port: 1025
+
+app:
+  jwt:
+    # Dev-only signing key - never reuse this outside local development.
+    secret: fb0b2daf5df21f25eaad06025f85135ab0a98ee6c0a5242a89f63f0c432820f2
+  notifications:
+    email-enabled: false
+
+logging:
+  level:
+    com.erp.ticketing: DEBUG

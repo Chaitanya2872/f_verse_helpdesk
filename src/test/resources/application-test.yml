@@ -1,0 +1,37 @@
+# Integration test profile: runs against the real, dedicated `ticketing_test`
+# PostgreSQL database (see task notes - Testcontainers is unavailable in this
+# environment, so Flyway migrates this real, otherwise-empty database instead).
+# @Transactional integration test classes roll back everything each test
+# commits directly, so re-running `mvn test` repeatedly leaves this database
+# clean (aside from rows created via REQUIRES_NEW, e.g. UserService's
+# find-or-create user lookup, which is idempotent by erpUserId).
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ticketing_test
+    username: postgres
+    password: praveen123
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  mail:
+    host: localhost
+    port: 1025
+
+app:
+  jwt:
+    secret: 78f350476697dc79458d7b8d3d826b9754af8ef005af9e411185e48c7d0466e6
+  sla:
+    monitoring:
+      enabled: false
+  notifications:
+    email-enabled: false
+
+logging:
+  level:
+    com.erp.ticketing: INFO
+
+eureka:
+  client:
+    enabled: false

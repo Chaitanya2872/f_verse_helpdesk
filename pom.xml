@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.fawnix</groupId>
+        <artifactId>verse-backend</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <groupId>com.fawnix</groupId>
+    <artifactId>helpdesk-service</artifactId>
+    <version>0.1.0</version>
+    <name>helpdesk-service</name>
+    <description>Fawnix Verse helpdesk / ticketing service</description>
+    <packaging>jar</packaging>
+
+    <properties>
+        <java.version>17</java.version>
+        <!-- Spring Boot 3.3.x manages an older Lombok (1.18.34) that predates support
+             for the JDK running this build (26); pin a newer Lombok explicitly so its
+             annotation processor actually runs instead of silently no-op'ing. -->
+        <lombok.version>1.18.46</lombok.version>
+        <!-- Same JDK-26-too-new problem as Lombok above, but for Mockito's inline mock
+             maker: Spring Boot 3.3.4 manages byte-buddy 1.14.19 / mockito 5.11.0, both of
+             which predate JDK 26 support, so ByteBuddyAgent fails to instrument classes
+             ("Could not modify all classes") for every mocked type. Pin newer versions
+             with JDK 26 support. -->
+        <byte-buddy.version>1.18.11</byte-buddy.version>
+        <mockito.version>5.23.0</mockito.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+        </dependency>
+
+        <!-- JSON console logging (observability): structured log output including
+             MDC fields (correlation ID) for prod; see logback-spring.xml.
+
+             Pinned to 8.1, not the newer 9.0: 9.0 switched its jackson-databind
+             dependency from the classic com.fasterxml.jackson.core:jackson-databind
+             to the new, differently-packaged tools.jackson.core:jackson-databind
+             (Jackson 3), which ships its own copy of the com.fasterxml.jackson.annotation
+             classes. Having both that and Spring's own jackson-databind (2.17.2, via
+             spring-boot-starter-json) on the classpath at once causes the JVM to load
+             two different definitions of com.fasterxml.jackson.annotation.JsonFormat,
+             and any request/response DTO field Spring's Jackson tries to serialize with
+             the newer JsonFormat.Shape.POJO enum constant (e.g. java.time.Instant, via
+             jackson-datatype-jsr310) then fails at runtime with
+             "NoSuchFieldError: ... does not have member field ... POJO". 8.1 is the
+             newest version still on classic Jackson 2 and has no such conflict. -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>8.1</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- The javac shipped with this JDK no longer auto-discovers annotation
+                         processors from the plain -classpath; it must be given an explicit
+                         processor path or Lombok silently does not run (no error, just no
+                         generated getters/setters/constructors). -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- No maven-failsafe-plugin/integration-test phase is configured in this
+                         project, so *IT.java classes (the @SpringBootTest integration tests
+                         against the real ticketing_test database) would otherwise never run
+                         under a plain `mvn test` - surefire's default include patterns
+                         (**/*Test.java, **/Test*.java, **/*Tests.java, **/*TestCase.java) do
+                         not match the *IT.java naming convention. Add it explicitly so
+                         `mvn test` alone runs both the Mockito unit tests and the integration
+                         tests, matching how this project is actually meant to be verified. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                        <include>**/*TestCase.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

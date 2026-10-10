@@ -4,7 +4,7 @@
 # local PostgreSQL instance if these defaults don't match your setup.
 spring:
   datasource:
-    url: ${HELPDESK_DB_URL:jdbc:postgresql://localhost:5432/ticketing}
+    url: ${HELPDESK_DB_URL:jdbc:postgresql://localhost:5432/fawnix_helpdesk}
     username: ${HELPDESK_DB_USERNAME:postgres}
     password: ${HELPDESK_DB_PASSWORD:postgres}
   # Placeholder SMTP settings - no real mail server is reachable in this dev

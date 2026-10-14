@@ -1,9 +1,19 @@
 package com.erp.ticketing.ticket.service;
 
+import com.erp.ticketing.approval.service.ApprovalService;
+import com.erp.ticketing.automation.model.AutomationRule;
+import com.erp.ticketing.automation.service.AutomationService;
 import com.erp.ticketing.common.BadRequestException;
+import com.erp.ticketing.form.model.FormVersion;
+import com.erp.ticketing.form.service.FormService;
+import com.erp.ticketing.common.ConflictException;
 import com.erp.ticketing.common.NotFoundException;
 import com.erp.ticketing.csat.service.CsatService;
 import com.erp.ticketing.department.model.Department;
+import com.erp.ticketing.integration.notification.event.TicketAssignedEvent;
+import com.erp.ticketing.integration.notification.event.TicketCreatedEvent;
+import com.erp.ticketing.integration.notification.event.TicketNotificationEvent;
+import com.erp.ticketing.integration.notification.event.TicketResolvedEvent;
 import com.erp.ticketing.department.model.DepartmentMember;
 import com.erp.ticketing.department.repository.DepartmentMemberRepository;
 import com.erp.ticketing.department.repository.DepartmentRepository;
@@ -14,22 +24,30 @@ import com.erp.ticketing.security.ErpUserPrincipal;
 import com.erp.ticketing.sla.dto.SlaDueDates;
 import com.erp.ticketing.sla.model.SlaPolicy;
 import com.erp.ticketing.sla.service.SlaCalculationService;
+import com.erp.ticketing.sla.service.SlaPauseService;
 import com.erp.ticketing.ticket.dto.PageResponse;
+import com.erp.ticketing.ticket.dto.TicketFilterExtras;
 import com.erp.ticketing.ticket.dto.TicketCreateRequest;
 import com.erp.ticketing.ticket.dto.TicketResponse;
 import com.erp.ticketing.ticket.dto.TicketSummaryResponse;
 import com.erp.ticketing.ticket.dto.TicketUpdateRequest;
 import com.erp.ticketing.ticket.model.Category;
+import com.erp.ticketing.ticket.model.Confidentiality;
+import com.erp.ticketing.ticket.model.Level;
+import com.erp.ticketing.ticket.model.PriorityMatrix;
+import com.erp.ticketing.ticket.model.TicketAssignment;
 import com.erp.ticketing.ticket.model.Ticket;
 import com.erp.ticketing.ticket.model.TicketPriority;
 import com.erp.ticketing.ticket.model.TicketSource;
 import com.erp.ticketing.ticket.model.TicketStatus;
 import com.erp.ticketing.ticket.model.TicketType;
 import com.erp.ticketing.ticket.repository.CategoryRepository;
+import com.erp.ticketing.ticket.repository.TicketAssignmentRepository;
 import com.erp.ticketing.ticket.repository.TicketRepository;
 import com.erp.ticketing.ticket.repository.TicketTypeRepository;
 import com.erp.ticketing.user.model.User;
 import com.erp.ticketing.user.service.UserService;
+import com.erp.ticketing.workflow.service.WorkflowService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
@@ -37,6 +55,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,8 +80,6 @@ public class TicketService {
 
     private static final Logger log = LoggerFactory.getLogger(TicketService.class);
 
-    private static final Map<TicketStatus, Set<TicketStatus>> ALLOWED_TRANSITIONS = new EnumMap<>(TicketStatus.class);
-
     /**
      * Shared by list()'s openOnly shorthand and slaStatus AT_RISK/ON_TRACK
      * predicates - a ticket in one of these statuses is done and no longer
@@ -69,19 +87,6 @@ public class TicketService {
      */
     private static final Set<TicketStatus> TERMINAL_STATUSES =
             EnumSet.of(TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED);
-
-    static {
-        ALLOWED_TRANSITIONS.put(TicketStatus.NEW, EnumSet.of(TicketStatus.IN_PROGRESS, TicketStatus.CANCELLED));
-        ALLOWED_TRANSITIONS.put(TicketStatus.IN_PROGRESS,
-                EnumSet.of(TicketStatus.WAITING_CUSTOMER, TicketStatus.WAITING_VENDOR, TicketStatus.RESOLVED, TicketStatus.CANCELLED));
-        ALLOWED_TRANSITIONS.put(TicketStatus.WAITING_CUSTOMER,
-                EnumSet.of(TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED, TicketStatus.CANCELLED));
-        ALLOWED_TRANSITIONS.put(TicketStatus.WAITING_VENDOR,
-                EnumSet.of(TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED, TicketStatus.CANCELLED));
-        ALLOWED_TRANSITIONS.put(TicketStatus.RESOLVED, EnumSet.of(TicketStatus.CLOSED, TicketStatus.IN_PROGRESS));
-        ALLOWED_TRANSITIONS.put(TicketStatus.CLOSED, EnumSet.noneOf(TicketStatus.class));
-        ALLOWED_TRANSITIONS.put(TicketStatus.CANCELLED, EnumSet.noneOf(TicketStatus.class));
-    }
 
     private final TicketRepository ticketRepository;
     private final TicketTypeRepository ticketTypeRepository;
@@ -94,9 +99,30 @@ public class TicketService {
     private final SlaCalculationService slaCalculationService;
     private final NotificationService notificationService;
     private final CsatService csatService;
+    private final TicketAccessService accessService;
+    private final TicketAssignmentRepository assignmentRepository;
+    private final WorkflowService workflowService;
+    private final ApprovalService approvalService;
+    private final SlaPauseService slaPauseService;
+    private final FormService formService;
+    private final AutomationService automationService;
 
     @PersistenceContext
     private EntityManager entityManager;
+
+    /** Optional so the service can still be built by hand in unit tests; events are simply dropped without it. */
+    private ApplicationEventPublisher eventPublisher;
+
+    @Autowired(required = false)
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
+    }
+
+    private void publish(TicketNotificationEvent event) {
+        if (eventPublisher != null) {
+            eventPublisher.publishEvent(event);
+        }
+    }
 
     public TicketService(TicketRepository ticketRepository,
                           TicketTypeRepository ticketTypeRepository,
@@ -108,7 +134,21 @@ public class TicketService {
                           RoutingRuleService routingRuleService,
                           SlaCalculationService slaCalculationService,
                           NotificationService notificationService,
-                          CsatService csatService) {
+                          CsatService csatService,
+                          TicketAccessService accessService,
+                          TicketAssignmentRepository assignmentRepository,
+                          WorkflowService workflowService,
+                          ApprovalService approvalService,
+                          SlaPauseService slaPauseService,
+                          FormService formService,
+                          AutomationService automationService) {
+        this.automationService = automationService;
+        this.formService = formService;
+        this.slaPauseService = slaPauseService;
+        this.workflowService = workflowService;
+        this.approvalService = approvalService;
+        this.accessService = accessService;
+        this.assignmentRepository = assignmentRepository;
         this.ticketRepository = ticketRepository;
         this.ticketTypeRepository = ticketTypeRepository;
         this.categoryRepository = categoryRepository;
@@ -129,41 +169,83 @@ public class TicketService {
         TicketType type = ticketTypeRepository.findById(request.typeId())
                 .orElseThrow(() -> new NotFoundException("Ticket type not found: " + request.typeId()));
 
+        if (type.getLifecycleStatus() != TicketType.Lifecycle.PUBLISHED) {
+            throw new BadRequestException("'" + type.getName() + "' is not accepting new requests");
+        }
+        FormVersion form = formService.published(type.getId()).orElse(null);
+        Map<String, Object> customFields = request.customFields();
+        if (form != null) {
+            customFields = formService.validate(form, customFields);
+        }
+
         Category category = null;
         if (request.categoryId() != null) {
             category = categoryRepository.findById(request.categoryId())
                     .orElseThrow(() -> new NotFoundException("Category not found: " + request.categoryId()));
         }
 
+        User requesterUser = requester;
+        if (request.requesterId() != null && !request.requesterId().equals(requester.getId())) {
+            // On-behalf creation (BRS 4.4): staff only; the creator stays on record separately.
+            if (accessService.isRequesterOnly(principal)) {
+                throw new BadRequestException("Only staff can raise a ticket on behalf of another user");
+            }
+            requesterUser = userService.getRequiredUser(request.requesterId());
+        }
+
         Ticket ticket = new Ticket();
-        ticket.setTicketNumber(generateTicketNumber());
         ticket.setType(type);
         ticket.setCategory(category);
         ticket.setTitle(request.title());
         ticket.setDescription(request.description());
-        ticket.setPriority(parsePriority(request.priority()));
+        Level impact = parseLevel(request.impact(), "impact");
+        Level urgency = parseLevel(request.urgency(), "urgency");
+        ticket.setImpact(impact);
+        ticket.setUrgency(urgency);
+        if (request.priority() != null && !request.priority().isBlank()) {
+            ticket.setPriority(parsePriority(request.priority()));
+        } else if (impact != null && urgency != null) {
+            ticket.setPriority(PriorityMatrix.resolve(impact, urgency));
+        } else {
+            throw new BadRequestException("priority is required unless both impact and urgency are provided");
+        }
         ticket.setStatus(TicketStatus.NEW);
-        ticket.setRequester(requester);
-        ticket.setSource(TicketSource.PORTAL);
+        ticket.setRequester(requesterUser);
+        ticket.setCreator(requester);
+        // The request type sets the floor. Only staff may classify higher; nobody can go below it,
+        // and a requester cannot hide their own ticket from the people who must work it.
+        Confidentiality requested = accessService.isRequesterOnly(principal)
+                ? Confidentiality.STANDARD : parseConfidentiality(request.confidentiality());
+        ticket.setConfidentiality(requested.compareTo(type.getDefaultConfidentiality()) >= 0
+                ? requested : type.getDefaultConfidentiality());
+        ticket.setExternalRef(request.externalRef());
+        ticket.setSource(requesterUser == requester ? TicketSource.PORTAL : TicketSource.AGENT);
         ticket.setTags(request.tags());
-        ticket.setCustomFields(request.customFields());
+        ticket.setCustomFields(customFields);
+        ticket.setFormVersionId(form != null ? form.getId() : null);
 
         // Routing: TicketCreateRequest has no department/assignee fields, so both
         // are always unset at this point - only overwrite with a matched rule's
         // (possibly partial) result.
         applyRouting(ticket, type, category);
 
+        // The number carries the department's code, so it can only be issued once routing has picked one.
+        ticket.setTicketNumber(generateTicketNumber(ticket.getDepartment()));
+
         // SLA: resolve a policy by type+priority and stamp due dates up front.
         applySla(ticket, type);
 
         ticket = ticketRepository.save(ticket);
         activityLogService.logCreated(ticket, requester);
+        recordAssignment(ticket, requester, null, null, "Initial routing");
 
         log.info("Ticket created", kv("ticketNumber", ticket.getTicketNumber()), kv("requesterId", requester.getId()),
                 kv("typeId", type.getId()), kv("priority", ticket.getPriority()));
 
         notifyOnCreate(ticket);
+        automationService.fire(AutomationRule.Trigger.TICKET_CREATED, ticket, Map.of());
 
+        publish(new TicketCreatedEvent(ticket.getId()));
         return toResponse(ticket);
     }
 
@@ -190,6 +272,7 @@ public class TicketService {
         Optional<SlaPolicy> policy = slaCalculationService.resolvePolicy(type, ticket.getPriority());
         policy.ifPresent(p -> {
             ticket.setSlaPolicyId(p.getId());
+            ticket.setSlaPolicyVersion(p.getVersion());
             SlaDueDates dueDates = slaCalculationService.computeDueDates(Instant.now(), p);
             ticket.setFirstResponseDue(dueDates.firstResponseDue());
             ticket.setResolutionDue(dueDates.resolutionDue());
@@ -197,6 +280,10 @@ public class TicketService {
     }
 
     private void notifyOnCreate(Ticket ticket) {
+        if (ticket.getConfidentiality() != Confidentiality.STANDARD) {
+            notifyRestrictedCreate(ticket);
+            return;
+        }
         User assignee = ticket.getAssignee();
         if (assignee != null) {
             Map<String, Object> placeholders = new HashMap<>();
@@ -221,6 +308,18 @@ public class TicketService {
         }
     }
 
+    /** Restricted tickets never put their title in front of people who cannot open them (BRS 12.1). */
+    private void notifyRestrictedCreate(Ticket ticket) {
+        User recipient = ticket.getAssignee() != null ? ticket.getAssignee() : ticket.getDepartment().getManager();
+        if (recipient == null) {
+            log.warn("Restricted ticket {} has no assignee or department manager to notify", ticket.getTicketNumber());
+            return;
+        }
+        notificationService.notify(recipient, ticket, "TICKET_CREATED",
+                "New restricted ticket: " + ticket.getTicketNumber(),
+                "A restricted ticket needs attention. Open it in the helpdesk to see the details.");
+    }
+
     @Transactional(readOnly = true)
     public TicketResponse get(Long id, ErpUserPrincipal principal) {
         Ticket ticket = ticketRepository.findById(id)
@@ -231,10 +330,30 @@ public class TicketService {
     }
 
     @Transactional(readOnly = true)
+    public List<com.erp.ticketing.ticket.dto.AssignmentHistoryResponse> assignmentHistory(
+            Long id, ErpUserPrincipal principal) {
+        Ticket ticket = ticketRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Ticket not found: " + id));
+        assertVisible(ticket, principal, userService.getOrCreateCurrentUser(principal));
+        return assignmentRepository.findByTicket_IdOrderByCreatedAtAsc(id).stream()
+                .map(a -> new com.erp.ticketing.ticket.dto.AssignmentHistoryResponse(
+                        a.getId(),
+                        a.getFromDepartment() != null ? a.getFromDepartment().getDepartmentName() : null,
+                        a.getToDepartment() != null ? a.getToDepartment().getDepartmentName() : null,
+                        a.getFromAssignee() != null ? a.getFromAssignee().getName() : null,
+                        a.getToAssignee() != null ? a.getToAssignee().getName() : null,
+                        a.getActor() != null ? a.getActor().getName() : null,
+                        a.getReason(),
+                        a.getCreatedAt()))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
     public PageResponse<TicketResponse> list(String status, String priority, Long typeId, Long categoryId,
                                               Long assigneeId, Long requesterId, Long departmentId, Boolean openOnly,
                                               Boolean unassigned, String slaStatus, String search, String createdFrom,
-                                              String createdTo, Pageable pageable, ErpUserPrincipal principal) {
+                                              String createdTo, TicketFilterExtras extras, Pageable pageable,
+                                              ErpUserPrincipal principal) {
         User currentUser = userService.getOrCreateCurrentUser(principal);
 
         Specification<Ticket> spec = Specification.where(null);
@@ -278,6 +397,7 @@ public class TicketService {
         if (slaStatus != null && !slaStatus.isBlank()) {
             spec = spec.and(buildSlaStatusSpec(slaStatus));
         }
+        spec = spec.and(buildExtrasSpec(extras == null ? TicketFilterExtras.NONE : extras));
         if (search != null && !search.isBlank()) {
             spec = spec.and(buildSearchSpec(search));
         }
@@ -291,15 +411,41 @@ public class TicketService {
             spec = spec.and((root, query, cb) -> cb.lessThanOrEqualTo(root.get("createdAt"), createdToInstant));
         }
 
-        // Phase 1 visibility: requester-only callers see just their own tickets.
-        // Department-based restriction for agents/managers is deferred to a later phase.
-        if (isRequesterOnly(principal)) {
-            Long currentUserId = currentUser.getId();
-            spec = spec.and((root, query, cb) -> cb.equal(root.get("requester").get("id"), currentUserId));
-        }
+        // Requesters see their own tickets; staff never see restricted or confidential
+        // tickets they have not been granted (TicketAccessService).
+        spec = spec.and(accessService.visibleTo(principal, currentUser));
 
         Page<Ticket> page = ticketRepository.findAll(spec, pageable);
         return PageResponse.of(page.map(this::toResponse));
+    }
+
+    private Specification<Ticket> buildExtrasSpec(TicketFilterExtras x) {
+        Specification<Ticket> spec = Specification.where(null);
+        if (x.externalRef() != null && !x.externalRef().isBlank()) {
+            String ref = x.externalRef().trim().toLowerCase();
+            spec = spec.and((root, query, cb) -> cb.equal(cb.lower(cb.coalesce(root.<String>get("externalRef"), "")), ref));
+        }
+        if (x.confidentiality() != null && !x.confidentiality().isBlank()) {
+            Confidentiality c = parseConfidentiality(x.confidentiality());
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("confidentiality"), c));
+        }
+        if (x.resolutionCode() != null && !x.resolutionCode().isBlank()) {
+            String code = x.resolutionCode().trim().toUpperCase();
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("resolutionCode"), code));
+        }
+        if (Boolean.TRUE.equals(x.reopened())) {
+            spec = spec.and((root, query, cb) -> cb.greaterThan(root.<Integer>get("reopenCount"), 0));
+        }
+        if (x.source() != null && !x.source().isBlank()) {
+            TicketSource source;
+            try {
+                source = TicketSource.valueOf(x.source().trim().toUpperCase());
+            } catch (IllegalArgumentException ex) {
+                throw new BadRequestException("Invalid source: " + x.source());
+            }
+            spec = spec.and((root, query, cb) -> cb.equal(root.get("source"), source));
+        }
+        return spec;
     }
 
     /**
@@ -319,6 +465,9 @@ public class TicketService {
             return cb.or(
                     cb.like(cb.lower(root.get("ticketNumber")), pattern),
                     cb.like(cb.lower(root.get("title")), pattern),
+                    cb.like(cb.lower(cb.coalesce(root.<String>get("description"), "")), pattern),
+                    cb.like(cb.lower(cb.coalesce(root.<String>get("externalRef"), "")), pattern),
+                    cb.like(cb.lower(cb.coalesce(root.<String>get("resolutionSummary"), "")), pattern),
                     cb.like(cb.lower(root.get("requester").get("name")), pattern),
                     cb.like(cb.lower(assigneeJoin.get("name")), pattern));
         };
@@ -418,13 +567,13 @@ public class TicketService {
             case "ADMIN" -> {
                 Specification<Ticket> scope = Specification.where(null);
                 yield new TicketSummaryResponse(
-                        ticketRepository.count(scope),
-                        ticketRepository.count(notTerminal),
-                        ticketRepository.count(slaAtRisk),
-                        ticketRepository.count(unassignedSpec),
-                        ticketRepository.count(inProgressSpec),
-                        ticketRepository.count(onHoldSpec),
-                        ticketRepository.count(resolvedSpec),
+                        countVisible(scope),
+                        countVisible(notTerminal),
+                        countVisible(slaAtRisk),
+                        countVisible(unassignedSpec),
+                        countVisible(inProgressSpec),
+                        countVisible(onHoldSpec),
+                        countVisible(resolvedSpec),
                         weekOverWeekTrendPercent(scope, "createdAt"),
                         weekOverWeekTrendPercent(scope, "resolvedAt"));
             }
@@ -434,13 +583,13 @@ public class TicketService {
                         ? Specification.where(null)
                         : (root, query, cb) -> root.get("department").get("id").in(departmentIds);
                 yield new TicketSummaryResponse(
-                        ticketRepository.count(scope),
-                        ticketRepository.count(scope.and(notTerminal)),
-                        ticketRepository.count(scope.and(slaAtRisk)),
-                        ticketRepository.count(scope.and(unassignedSpec)),
-                        ticketRepository.count(scope.and(inProgressSpec)),
-                        ticketRepository.count(scope.and(onHoldSpec)),
-                        ticketRepository.count(scope.and(resolvedSpec)),
+                        countVisible(scope),
+                        countVisible(scope.and(notTerminal)),
+                        countVisible(scope.and(slaAtRisk)),
+                        countVisible(scope.and(unassignedSpec)),
+                        countVisible(scope.and(inProgressSpec)),
+                        countVisible(scope.and(onHoldSpec)),
+                        countVisible(scope.and(resolvedSpec)),
                         weekOverWeekTrendPercent(scope, "createdAt"),
                         weekOverWeekTrendPercent(scope, "resolvedAt"));
             }
@@ -456,13 +605,13 @@ public class TicketService {
                 // by-assignee scoping; totalTicketsTrendPercent mirrors totalTickets'
                 // org-wide scoping.
                 yield new TicketSummaryResponse(
-                        ticketRepository.count(Specification.where(null)),
-                        ticketRepository.count(byAssignee.and(notTerminal)),
-                        ticketRepository.count(byAssignee.and(slaAtRisk)),
-                        ticketRepository.count(unassignedSpec),
-                        ticketRepository.count(byAssignee.and(inProgressSpec)),
-                        ticketRepository.count(byAssignee.and(onHoldSpec)),
-                        ticketRepository.count(byAssignee.and(resolvedSpec)),
+                        countVisible(Specification.where(null)),
+                        countVisible(byAssignee.and(notTerminal)),
+                        countVisible(byAssignee.and(slaAtRisk)),
+                        countVisible(unassignedSpec),
+                        countVisible(byAssignee.and(inProgressSpec)),
+                        countVisible(byAssignee.and(onHoldSpec)),
+                        countVisible(byAssignee.and(resolvedSpec)),
                         weekOverWeekTrendPercent(Specification.where(null), "createdAt"),
                         weekOverWeekTrendPercent(byAssignee, "resolvedAt"));
             }
@@ -470,13 +619,13 @@ public class TicketService {
                 Long userId = currentUser.getId();
                 Specification<Ticket> byRequester = (root, query, cb) -> cb.equal(root.get("requester").get("id"), userId);
                 yield new TicketSummaryResponse(
-                        ticketRepository.count(byRequester),
-                        ticketRepository.count(byRequester.and(notTerminal)),
-                        ticketRepository.count(byRequester.and(slaAtRisk)),
-                        ticketRepository.count(byRequester.and(unassignedSpec)),
-                        ticketRepository.count(byRequester.and(inProgressSpec)),
-                        ticketRepository.count(byRequester.and(onHoldSpec)),
-                        ticketRepository.count(byRequester.and(resolvedSpec)),
+                        countVisible(byRequester),
+                        countVisible(byRequester.and(notTerminal)),
+                        countVisible(byRequester.and(slaAtRisk)),
+                        countVisible(byRequester.and(unassignedSpec)),
+                        countVisible(byRequester.and(inProgressSpec)),
+                        countVisible(byRequester.and(onHoldSpec)),
+                        countVisible(byRequester.and(resolvedSpec)),
                         weekOverWeekTrendPercent(byRequester, "createdAt"),
                         weekOverWeekTrendPercent(byRequester, "resolvedAt"));
             }
@@ -500,8 +649,8 @@ public class TicketService {
         Specification<Ticket> priorWeek = scope.and((root, query, cb) -> cb.and(
                 cb.greaterThanOrEqualTo(root.<Instant>get(dateField), twoWeeksAgo),
                 cb.lessThan(root.<Instant>get(dateField), weekAgo)));
-        long thisWeekCount = ticketRepository.count(thisWeek);
-        long priorWeekCount = ticketRepository.count(priorWeek);
+        long thisWeekCount = countVisible(thisWeek);
+        long priorWeekCount = countVisible(priorWeek);
         if (priorWeekCount == 0L) {
             return null;
         }
@@ -514,6 +663,10 @@ public class TicketService {
      * ReportingService.resolveVariant exactly (duplicated locally for the same
      * reason as parseInstant/resolveDepartmentIds below).
      */
+    private long countVisible(Specification<Ticket> spec) {
+        return ticketRepository.count(Specification.where(spec).and(accessService.currentVisibility()));
+    }
+
     private String resolveRole(ErpUserPrincipal principal) {
         Set<String> roles = principal.roles();
         if (roles.stream().anyMatch(r -> r.equalsIgnoreCase("ADMIN"))) {
@@ -543,6 +696,16 @@ public class TicketService {
         User currentUser = userService.getOrCreateCurrentUser(principal);
         assertVisible(ticket, principal, currentUser);
 
+        if (request.version() != null && !request.version().equals(ticket.getVersion())) {
+            throw new ConflictException("Ticket " + ticket.getTicketNumber()
+                    + " was changed by someone else - reload and retry");
+        }
+        if (isRequesterOnly(principal)) {
+            guardRequesterUpdate(ticket, request);
+        }
+        Department previousDepartment = ticket.getDepartment();
+        User previousAssignee = ticket.getAssignee();
+
         if (request.categoryId() != null) {
             Category category = categoryRepository.findById(request.categoryId())
                     .orElseThrow(() -> new NotFoundException("Category not found: " + request.categoryId()));
@@ -571,13 +734,45 @@ public class TicketService {
             }
         }
 
+        TicketStatus statusChangedTo = null;
         if (request.status() != null) {
             TicketStatus newStatus = parseStatus(request.status());
             TicketStatus oldStatus = ticket.getStatus();
             if (newStatus != oldStatus) {
-                validateTransition(oldStatus, newStatus);
+                validateTransition(ticket.getType().getId(), oldStatus, newStatus);
+                if (oldStatus == TicketStatus.WAITING_APPROVAL && approvalService.hasOpenTasks(ticket)) {
+                    if (newStatus != TicketStatus.CANCELLED) {
+                        throw new BadRequestException(
+                                "Pending approvals must be decided or withdrawn before this ticket can move on");
+                    }
+                    approvalService.withdrawOpen(ticket, "Ticket cancelled");
+                }
+                if (newStatus == TicketStatus.CANCELLED && isBlank(request.reason())) {
+                    throw new BadRequestException("A reason is required to cancel a ticket");
+                }
+                if (newStatus == TicketStatus.RESOLVED) {
+                    String code = firstNonBlank(request.resolutionCode(), ticket.getResolutionCode());
+                    String summary = firstNonBlank(request.resolutionSummary(), ticket.getResolutionSummary());
+                    if (code == null || summary == null) {
+                        throw new BadRequestException("resolutionCode and resolutionSummary are required to resolve a ticket");
+                    }
+                    ticket.setResolutionCode(code);
+                    ticket.setResolutionSummary(summary);
+                    ticket.setResolvedBy(currentUser);
+                    logChange(ticket, currentUser, "resolution", null, code + ": " + summary);
+                } else if (newStatus == TicketStatus.REOPENED) {
+                    // Prior resolution stays in the activity log; the live fields restart.
+                    ticket.setReopenCount(ticket.getReopenCount() + 1);
+                    ticket.setResolvedAt(null);
+                    ticket.setClosedAt(null);
+                }
                 logChange(ticket, currentUser, "status", oldStatus, newStatus);
                 ticket.setStatus(newStatus);
+                if (newStatus == TicketStatus.WAITING_APPROVAL) {
+                    approvalService.start(ticket, currentUser);
+                }
+                slaPauseService.onStatusChange(ticket, oldStatus, newStatus, currentUser);
+                statusChangedTo = newStatus;
                 log.info("Ticket status changed", kv("ticketNumber", ticket.getTicketNumber()),
                         kv("actorId", currentUser.getId()), kv("oldStatus", oldStatus), kv("newStatus", newStatus));
                 if (newStatus == TicketStatus.RESOLVED) {
@@ -600,10 +795,12 @@ public class TicketService {
             ticket.setSubStatus(request.subStatus());
         }
 
+        User newlyAssigned = null;
         if (request.assigneeId() != null) {
             User assignee = userService.getRequiredUser(request.assigneeId());
             Long oldId = ticket.getAssignee() != null ? ticket.getAssignee().getId() : null;
             if (!Objects.equals(oldId, assignee.getId())) {
+                newlyAssigned = assignee;
                 logChange(ticket, currentUser, "assigneeId", oldId, assignee.getId());
                 ticket.setAssignee(assignee);
                 Map<String, Object> placeholders = new HashMap<>();
@@ -634,12 +831,71 @@ public class TicketService {
         }
 
         if (request.customFields() != null && !request.customFields().equals(ticket.getCustomFields())) {
-            logChange(ticket, currentUser, "customFields", ticket.getCustomFields(), request.customFields());
-            ticket.setCustomFields(request.customFields());
+            Map<String, Object> newFields = request.customFields();
+            if (ticket.getFormVersionId() != null) {
+                // Edits are held to the form version the ticket was submitted with, not the latest one.
+                newFields = formService.validate(formService.getVersion(ticket.getFormVersionId()), newFields);
+            }
+            logChange(ticket, currentUser, "customFields", ticket.getCustomFields(), newFields);
+            ticket.setCustomFields(newFields);
         }
 
-        ticket = ticketRepository.save(ticket);
+        boolean ownershipChanged = !Objects.equals(previousAssignee, ticket.getAssignee())
+                || !Objects.equals(previousDepartment, ticket.getDepartment());
+        if (ownershipChanged) {
+            if (request.status() == null
+                    && (ticket.getStatus() == TicketStatus.NEW || ticket.getStatus() == TicketStatus.TRIAGE)
+                    && ticket.getAssignee() != null) {
+                logChange(ticket, currentUser, "status", ticket.getStatus(), TicketStatus.ASSIGNED);
+                ticket.setStatus(TicketStatus.ASSIGNED);
+            }
+            recordAssignment(ticket, currentUser, previousDepartment, previousAssignee, request.reason());
+        }
+
+        ticket = ticketRepository.saveAndFlush(ticket);
+        if (statusChangedTo != null) {
+            automationService.fire(AutomationRule.Trigger.STATUS_CHANGED, ticket, Map.of());
+            ticket = ticketRepository.saveAndFlush(ticket);
+        }
+        // Only genuine changes raise events: an unrelated edit, or re-saving the same handler, raises none.
+        if (newlyAssigned != null) {
+            publish(new TicketAssignedEvent(ticket.getId(), newlyAssigned.getId(), currentUser.getId(), Instant.now()));
+        }
+        if (statusChangedTo == TicketStatus.RESOLVED) {
+            publish(new TicketResolvedEvent(ticket.getId(), ticket.getReopenCount()));
+        }
         return toResponse(ticket);
+    }
+
+    /** Requesters may edit wording, supply information and cancel/confirm - never triage or ownership fields. */
+    private void guardRequesterUpdate(Ticket ticket, TicketUpdateRequest request) {
+        if (request.priority() != null || request.assigneeId() != null || request.departmentId() != null
+                || request.subStatus() != null || request.confidentiality() != null
+                || request.resolutionCode() != null || request.resolutionSummary() != null
+                || request.impact() != null || request.urgency() != null || request.categoryId() != null) {
+            throw new BadRequestException("Requesters cannot change classification, priority or ownership");
+        }
+        if (request.status() != null) {
+            TicketStatus target = parseStatus(request.status());
+            boolean cancelOwn = target == TicketStatus.CANCELLED;
+            boolean afterResolution = ticket.getStatus() == TicketStatus.RESOLVED
+                    && (target == TicketStatus.CLOSED || target == TicketStatus.REOPENED);
+            boolean supplyInfo = ticket.getStatus() == TicketStatus.WAITING_CUSTOMER && target == TicketStatus.IN_PROGRESS;
+            if (!(cancelOwn || afterResolution || supplyInfo)) {
+                throw new BadRequestException("Requesters cannot move a ticket to " + target);
+            }
+        }
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
+
+    private static String firstNonBlank(String a, String b) {
+        if (!isBlank(a)) {
+            return a.trim();
+        }
+        return isBlank(b) ? null : b;
     }
 
     private void logChange(Ticket ticket, User actor, String fieldName, Object oldValue, Object newValue) {
@@ -648,25 +904,53 @@ public class TicketService {
                 newValue != null ? newValue.toString() : null);
     }
 
-    private void validateTransition(TicketStatus from, TicketStatus to) {
-        Set<TicketStatus> allowed = ALLOWED_TRANSITIONS.getOrDefault(from, Set.of());
-        if (!allowed.contains(to)) {
+    private void validateTransition(Long ticketTypeId, TicketStatus from, TicketStatus to) {
+        if (!workflowService.isAllowed(ticketTypeId, from, to)) {
             throw new BadRequestException("Invalid status transition: " + from + " -> " + to);
         }
     }
 
     private void assertVisible(Ticket ticket, ErpUserPrincipal principal, User currentUser) {
-        if (isRequesterOnly(principal) && !ticket.getRequester().getId().equals(currentUser.getId())) {
-            // 404 rather than 403 to avoid leaking existence of tickets the caller can't see.
-            throw new NotFoundException("Ticket not found: " + ticket.getId());
-        }
+        // 404 rather than 403 so a guessed ID reveals nothing about tickets the caller cannot see.
+        accessService.assertVisible(ticket, principal, currentUser);
     }
 
     private boolean isRequesterOnly(ErpUserPrincipal principal) {
-        Set<String> roles = principal.roles();
-        boolean hasElevatedRole = roles.stream().anyMatch(r ->
-                "AGENT".equalsIgnoreCase(r) || "MANAGER".equalsIgnoreCase(r) || "ADMIN".equalsIgnoreCase(r));
-        return !hasElevatedRole;
+        return accessService.isRequesterOnly(principal);
+    }
+
+    private Level parseLevel(String value, String field) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Level.valueOf(value.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new BadRequestException("Invalid " + field + ": " + value);
+        }
+    }
+
+    private Confidentiality parseConfidentiality(String value) {
+        if (value == null || value.isBlank()) {
+            return Confidentiality.STANDARD;
+        }
+        try {
+            return Confidentiality.valueOf(value.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new BadRequestException("Invalid confidentiality: " + value);
+        }
+    }
+
+    private void recordAssignment(Ticket ticket, User actor, Department fromDepartment, User fromAssignee, String reason) {
+        TicketAssignment row = new TicketAssignment();
+        row.setTicket(ticket);
+        row.setActor(actor);
+        row.setFromDepartment(fromDepartment);
+        row.setToDepartment(ticket.getDepartment());
+        row.setFromAssignee(fromAssignee);
+        row.setToAssignee(ticket.getAssignee());
+        row.setReason(reason);
+        assignmentRepository.save(row);
     }
 
     private TicketPriority parsePriority(String value) {
@@ -685,11 +969,13 @@ public class TicketService {
         }
     }
 
-    private String generateTicketNumber() {
+    /** CODE-YEAR-NUMBER, e.g. IT-2026-000036. The number is one global sequence, so it never repeats across departments. */
+    private String generateTicketNumber(Department department) {
         Number sequenceValue = (Number) entityManager.createNativeQuery("select nextval('ticket_number_seq')")
                 .getSingleResult();
         int year = Instant.now().atZone(ZoneOffset.UTC).getYear();
-        return "TKT-" + year + "-" + String.format("%06d", sequenceValue.longValue());
+        String code = department != null && department.getCode() != null ? department.getCode() : "HD";
+        return code + "-" + year + "-" + String.format("%06d", sequenceValue.longValue());
     }
 
     private TicketResponse toResponse(Ticket ticket) {
@@ -725,7 +1011,20 @@ public class TicketService {
                 ticket.getResolvedAt(),
                 ticket.getClosedAt(),
                 computeSlaStatus(ticket),
-                ticket.getSlaPolicyId());
+                ticket.getSlaPolicyId(),
+                ticket.getPublicId() != null ? ticket.getPublicId().toString() : null,
+                ticket.getVersion(),
+                ticket.getCreator() != null ? ticket.getCreator().getId() : null,
+                ticket.getCreator() != null ? ticket.getCreator().getName() : null,
+                ticket.getConfidentiality().name(),
+                ticket.getResolutionCode(),
+                ticket.getResolutionSummary(),
+                ticket.getResolvedBy() != null ? ticket.getResolvedBy().getId() : null,
+                ticket.getResolvedBy() != null ? ticket.getResolvedBy().getName() : null,
+                ticket.getReopenCount(),
+                ticket.getImpact() != null ? ticket.getImpact().name() : null,
+                ticket.getUrgency() != null ? ticket.getUrgency().name() : null,
+                ticket.getExternalRef());
     }
 
     /**
@@ -743,6 +1042,9 @@ public class TicketService {
     public String computeSlaStatus(Ticket ticket) {
         if (ticket.getSlaPolicyId() == null || ticket.getResolutionDue() == null) {
             return "NOT_APPLICABLE";
+        }
+        if (ticket.getSlaPausedAt() != null) {
+            return "PAUSED";
         }
 
         Instant resolutionDue = ticket.getResolutionDue();

@@ -46,3 +46,16 @@ app:
       fixed-delay-ms: 60000
   notifications:
     email-enabled: false
+  # Hand-over of ticket events to the external notification-service (see docs/notification-integration.md).
+  # Off until NOTIFICATION_SERVICE_ENABLED=true; the secret must match INTERNAL_SERVICE_SECRET over there.
+  notification-service:
+    enabled: ${NOTIFICATION_SERVICE_ENABLED:false}
+    base-url: ${NOTIFICATION_SERVICE_BASE_URL:http://localhost:8092}
+    internal-secret: ${NOTIFICATION_SERVICE_INTERNAL_SECRET:}
+    connect-timeout: ${NOTIFICATION_SERVICE_CONNECT_TIMEOUT:3s}
+    read-timeout: ${NOTIFICATION_SERVICE_READ_TIMEOUT:15s}
+    app-base-url: ${HELPDESK_APP_BASE_URL:http://localhost:5173}
+    max-attempts: ${NOTIFICATION_SERVICE_MAX_ATTEMPTS:6}
+    retry-base-delay: ${NOTIFICATION_SERVICE_RETRY_BASE_DELAY:30s}
+    retry-max-delay: ${NOTIFICATION_SERVICE_RETRY_MAX_DELAY:15m}
+    poll-interval-ms: ${NOTIFICATION_SERVICE_POLL_INTERVAL_MS:5000}

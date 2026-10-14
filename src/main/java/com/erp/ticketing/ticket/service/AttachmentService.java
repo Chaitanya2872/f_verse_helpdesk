@@ -21,24 +21,35 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 
 @Service
 public class AttachmentService {
 
+    private static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
+
+    /** BRS 18.2 allowlist - executables, scripts and archives are rejected. */
+    private static final Set<String> ALLOWED_EXTENSIONS = Set.of(
+            ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".txt", ".csv", ".log",
+            ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".msg", ".eml");
+
     private final AttachmentRepository attachmentRepository;
     private final TicketRepository ticketRepository;
     private final UserService userService;
+    private final TicketAccessService accessService;
     private final Path storageDir;
 
     public AttachmentService(AttachmentRepository attachmentRepository,
                               TicketRepository ticketRepository,
                               UserService userService,
+                              TicketAccessService accessService,
                               @Value("${app.attachments.storage-dir}") String storageDir) {
         this.attachmentRepository = attachmentRepository;
         this.ticketRepository = ticketRepository;
         this.userService = userService;
+        this.accessService = accessService;
         this.storageDir = Paths.get(storageDir).toAbsolutePath().normalize();
         try {
             Files.createDirectories(this.storageDir);
@@ -55,11 +66,17 @@ public class AttachmentService {
         User uploader = userService.getOrCreateCurrentUser(principal);
         Ticket ticket = requireVisibleTicket(ticketId, principal, uploader);
 
-        String originalName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "attachment";
+        if (file.getSize() > MAX_FILE_BYTES) {
+            throw new BadRequestException("File exceeds the " + (MAX_FILE_BYTES / (1024 * 1024)) + " MB limit");
+        }
+        String originalName = sanitizeFileName(file.getOriginalFilename());
         String extension = "";
         int dotIndex = originalName.lastIndexOf('.');
         if (dotIndex >= 0) {
-            extension = originalName.substring(dotIndex);
+            extension = originalName.substring(dotIndex).toLowerCase(Locale.ROOT);
+        }
+        if (!ALLOWED_EXTENSIONS.contains(extension)) {
+            throw new BadRequestException("File type not allowed: " + (extension.isEmpty() ? "(none)" : extension));
         }
         String generatedName = UUID.randomUUID() + extension;
         Path targetPath = storageDir.resolve(generatedName);
@@ -91,6 +108,23 @@ public class AttachmentService {
                 .toList();
     }
 
+    /** Loads an attachment only if the caller may see its ticket (BRS 18.1: no direct object references). */
+    @Transactional(readOnly = true)
+    public Attachment getAuthorized(Long attachmentId, ErpUserPrincipal principal) {
+        Attachment attachment = getRequired(attachmentId);
+        User currentUser = userService.getOrCreateCurrentUser(principal);
+        requireVisibleTicket(attachment.getTicket().getId(), principal, currentUser);
+        return attachment;
+    }
+
+    /** Strips any path and control characters so the stored display name can never traverse or inject headers. */
+    public static String sanitizeFileName(String raw) {
+        String name = raw == null ? "attachment" : raw;
+        name = name.substring(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
+        name = name.replaceAll("[\\p{Cntrl}\"]", "_").trim();
+        return name.isEmpty() ? "attachment" : name;
+    }
+
     @Transactional(readOnly = true)
     public Attachment getRequired(Long attachmentId) {
         return attachmentRepository.findById(attachmentId)
@@ -104,17 +138,8 @@ public class AttachmentService {
     private Ticket requireVisibleTicket(Long ticketId, ErpUserPrincipal principal, User currentUser) {
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException("Ticket not found: " + ticketId));
-        if (isRequesterOnly(principal) && !ticket.getRequester().getId().equals(currentUser.getId())) {
-            throw new NotFoundException("Ticket not found: " + ticketId);
-        }
+        accessService.assertVisible(ticket, principal, currentUser);
         return ticket;
-    }
-
-    private boolean isRequesterOnly(ErpUserPrincipal principal) {
-        Set<String> roles = principal.roles();
-        boolean hasElevatedRole = roles.stream().anyMatch(r ->
-                "AGENT".equalsIgnoreCase(r) || "MANAGER".equalsIgnoreCase(r) || "ADMIN".equalsIgnoreCase(r));
-        return !hasElevatedRole;
     }
 
     private AttachmentResponse toResponse(Attachment attachment) {

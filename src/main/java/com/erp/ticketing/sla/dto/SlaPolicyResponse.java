@@ -1,5 +1,6 @@
 package com.erp.ticketing.sla.dto;
 
+import java.util.List;
 import java.util.Map;
 
 public record SlaPolicyResponse(
@@ -10,6 +11,10 @@ public record SlaPolicyResponse(
         int firstResponseMinutes,
         int resolutionMinutes,
         Long calendarId,
-        boolean isActive
+        boolean isActive,
+        int version,
+        List<String> pauseStatuses,
+        int warningPercent,
+        Integer escalateAfterBreachMinutes
 ) {
 }

@@ -39,4 +39,9 @@ public class SlaCalendar {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "working_hours_json", columnDefinition = "jsonb")
     private Map<String, Object> workingHoursJson;
+
+    /** ISO dates (yyyy-MM-dd) on which the calendar is closed: holidays and exceptional closures. */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "holidays_json", columnDefinition = "jsonb")
+    private java.util.List<String> holidaysJson;
 }

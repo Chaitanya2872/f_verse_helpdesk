@@ -61,15 +61,18 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, BASE + "/departments/**").hasAnyRole(ALL_ROLES)
                         .requestMatchers(BASE + "/departments/**").hasRole("ADMIN")
 
-                        .requestMatchers(HttpMethod.DELETE, BASE + "/kb/articles/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.POST, BASE + "/kb/articles", BASE + "/kb/articles/**").hasAnyRole(STAFF)
-                        .requestMatchers(HttpMethod.PUT, BASE + "/kb/articles/**").hasAnyRole(STAFF)
 
                         // Requesters see their own dashboard, never cross-department aggregates.
                         .requestMatchers(HttpMethod.GET, BASE + "/reports/dashboard/summary").hasAnyRole(ALL_ROLES)
                         .requestMatchers(BASE + "/reports/**").hasAnyRole(STAFF)
 
                         .requestMatchers(HttpMethod.POST, BASE + "/tickets/bulk-action").hasAnyRole(STAFF)
+
+                        // Problems, changes and major incidents are worked by staff; requesters only get the
+                        // customer-facing view of active incidents.
+                        .requestMatchers(HttpMethod.GET, BASE + "/major-incidents/public").hasAnyRole(ALL_ROLES)
+                        .requestMatchers(BASE + "/problems/**", BASE + "/changes/**", BASE + "/major-incidents/**")
+                        .hasAnyRole(STAFF)
 
                         .requestMatchers(BASE + "/**").hasAnyRole(ALL_ROLES)
                         .anyRequest().denyAll());

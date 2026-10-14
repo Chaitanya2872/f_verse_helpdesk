@@ -46,7 +46,7 @@ class CommentControllerIT {
     @Test
     void internalCommentIsHiddenFromRequesterButVisibleToAgent() throws Exception {
         String requesterId = uniqueUserId("requester");
-        String agentId = uniqueUserId("agent");
+        String agentId = staffInGeneralSupport("agent");
         long ticketId = createTicket(requesterId);
 
         // Public comment, visible to everyone.
@@ -110,6 +110,17 @@ class CommentControllerIT {
                 .andReturn();
         JsonNode node = objectMapper.readTree(result.getResponse().getContentAsString());
         return node.get("id").asLong();
+    }
+
+    private String staffInGeneralSupport(String prefix) throws Exception {
+        String login = uniqueUserId(prefix);
+        long id = objectMapper.readTree(mockMvc.perform(get("/api/helpdesk/me").header("Authorization", bearer(login, "AGENT")))
+                .andReturn().getResponse().getContentAsString()).get("id").asLong();
+        mockMvc.perform(post("/api/helpdesk/departments/1/members")
+                        .header("Authorization", bearer(uniqueUserId("setup-admin"), "ADMIN"))
+                        .contentType("application/json").content("{\"userId\": " + id + ", \"isLead\": false}"))
+                .andExpect(status().isCreated());
+        return login;
     }
 
     private String uniqueUserId(String prefix) {

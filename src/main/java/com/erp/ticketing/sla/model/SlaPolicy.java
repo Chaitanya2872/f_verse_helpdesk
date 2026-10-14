@@ -54,4 +54,19 @@ public class SlaPolicy {
 
     @Column(name = "is_active", nullable = false)
     private boolean active = true;
+
+    /** Bumped on every edit; copied onto tickets so later edits never rewrite their history. */
+    @Column(name = "version", nullable = false)
+    private int version = 1;
+
+    /** Comma-separated ticket statuses during which the SLA clock is paused (BRS 9.3). */
+    @Column(name = "pause_statuses", nullable = false, length = 200)
+    private String pauseStatuses = "WAITING_CUSTOMER";
+
+    @Column(name = "warning_percent", nullable = false)
+    private int warningPercent = 80;
+
+    /** Minutes after a breach at which the department manager is escalated to; null disables escalation. */
+    @Column(name = "escalate_after_breach_minutes")
+    private Integer escalateAfterBreachMinutes;
 }

@@ -4,6 +4,8 @@ import com.erp.ticketing.notification.service.NotificationService;
 import com.erp.ticketing.department.model.Department;
 import com.erp.ticketing.department.model.DepartmentMember;
 import com.erp.ticketing.department.repository.DepartmentMemberRepository;
+import com.erp.ticketing.sla.model.SlaPolicy;
+import com.erp.ticketing.sla.repository.SlaPolicyRepository;
 import com.erp.ticketing.ticket.model.Ticket;
 import com.erp.ticketing.ticket.model.TicketStatus;
 import com.erp.ticketing.ticket.repository.TicketRepository;
@@ -39,12 +41,11 @@ public class SlaMonitoringJob {
     private static final Set<TicketStatus> TERMINAL_STATUSES =
             EnumSet.of(TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED);
 
-    private static final double WARNING_THRESHOLD_RATIO = 0.8;
-
     private final TicketRepository ticketRepository;
     private final ActivityLogService activityLogService;
     private final NotificationService notificationService;
     private final DepartmentMemberRepository departmentMemberRepository;
+    private final SlaPolicyRepository policyRepository;
 
     @Value("${app.sla.monitoring.enabled:true}")
     private boolean enabled;
@@ -52,7 +53,9 @@ public class SlaMonitoringJob {
     public SlaMonitoringJob(TicketRepository ticketRepository,
                              ActivityLogService activityLogService,
                              NotificationService notificationService,
-                             DepartmentMemberRepository departmentMemberRepository) {
+                             DepartmentMemberRepository departmentMemberRepository,
+                             SlaPolicyRepository policyRepository) {
+        this.policyRepository = policyRepository;
         this.ticketRepository = ticketRepository;
         this.activityLogService = activityLogService;
         this.notificationService = notificationService;
@@ -69,8 +72,14 @@ public class SlaMonitoringJob {
         Instant now = Instant.now();
         List<Ticket> candidates = ticketRepository.findByStatusNotInAndResolutionDueIsNotNull(TERMINAL_STATUSES);
 
+        Map<Long, SlaPolicy> policies = new HashMap<>();
         for (Ticket ticket : candidates) {
+            if (ticket.getSlaPausedAt() != null) {
+                continue; // clock stopped: nothing can breach or warn while paused
+            }
             boolean changed = false;
+            SlaPolicy policy = ticket.getSlaPolicyId() == null ? null
+                    : policies.computeIfAbsent(ticket.getSlaPolicyId(), id -> policyRepository.findById(id).orElse(null));
 
             if (now.isAfter(ticket.getResolutionDue())) {
                 if (!ticket.isSlaBreached()) {
@@ -87,7 +96,13 @@ public class SlaMonitoringJob {
                     ticket.setSlaBreachNotified(true);
                     changed = true;
                 }
-            } else if (!ticket.isSlaWarningSent() && isAtRisk(ticket, now)) {
+                if (!ticket.isSlaEscalated() && policy != null && policy.getEscalateAfterBreachMinutes() != null
+                        && now.isAfter(ticket.getResolutionDue().plus(Duration.ofMinutes(policy.getEscalateAfterBreachMinutes())))) {
+                    escalateToManager(ticket);
+                    ticket.setSlaEscalated(true);
+                    changed = true;
+                }
+            } else if (!ticket.isSlaWarningSent() && isAtRisk(ticket, now, policy)) {
                 ticket.setSlaWarningSent(true);
                 notifyAssigneeOrDepartmentLeads(ticket, "SLA_WARNING");
                 changed = true;
@@ -99,7 +114,22 @@ public class SlaMonitoringJob {
         }
     }
 
-    private boolean isAtRisk(Ticket ticket, Instant now) {
+    /** One-off escalation to the department manager once a breach has gone unresolved past the policy window. */
+    private void escalateToManager(Ticket ticket) {
+        Department department = ticket.getDepartment();
+        User manager = department != null ? department.getManager() : null;
+        if (manager == null) {
+            log.warn("Ticket {} breached its SLA but its department has no manager to escalate to", ticket.getTicketNumber());
+            return;
+        }
+        notificationService.notify(manager, ticket, "SLA_ESCALATED", "SLA escalation: " + ticket.getTicketNumber(),
+                "Ticket " + ticket.getTicketNumber() + " (" + ticket.getTitle()
+                        + ") is still unresolved well past its SLA and needs your attention.");
+        activityLogService.logFieldChanged(ticket, null, "escalation", null, "Escalated to " + manager.getName());
+    }
+
+    private boolean isAtRisk(Ticket ticket, Instant now, SlaPolicy policy) {
+        double warningRatio = (policy != null ? policy.getWarningPercent() : 80) / 100.0;
         Instant createdAt = ticket.getCreatedAt();
         Instant resolutionDue = ticket.getResolutionDue();
         long totalMinutes = Duration.between(createdAt, resolutionDue).toMinutes();
@@ -108,7 +138,7 @@ public class SlaMonitoringJob {
         }
         long elapsedMinutes = Duration.between(createdAt, now).toMinutes();
         double ratio = (double) elapsedMinutes / totalMinutes;
-        return ratio >= WARNING_THRESHOLD_RATIO;
+        return ratio >= warningRatio;
     }
 
     private void notifyAssigneeOrDepartmentLeads(Ticket ticket, String eventType) {

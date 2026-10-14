@@ -26,8 +26,11 @@ import java.util.List;
 public class NotificationTemplateAdminController {
 
     private final NotificationTemplateRepository notificationTemplateRepository;
+    private final com.erp.ticketing.audit.service.AuditService auditService;
 
-    public NotificationTemplateAdminController(NotificationTemplateRepository notificationTemplateRepository) {
+    public NotificationTemplateAdminController(NotificationTemplateRepository notificationTemplateRepository,
+                                               com.erp.ticketing.audit.service.AuditService auditService) {
+        this.auditService = auditService;
         this.notificationTemplateRepository = notificationTemplateRepository;
     }
 
@@ -41,6 +44,9 @@ public class NotificationTemplateAdminController {
     public NotificationTemplateResponse update(@PathVariable Long id, @RequestBody NotificationTemplateUpdateRequest request) {
         NotificationTemplate template = notificationTemplateRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Notification template not found: " + id));
+        java.util.Map<String, Object> before = new java.util.LinkedHashMap<>();
+        before.put("subject", template.getSubjectTemplate());
+        before.put("body", template.getBodyTemplate());
         if (request.subjectTemplate() != null) {
             template.setSubjectTemplate(request.subjectTemplate());
         }
@@ -48,6 +54,10 @@ public class NotificationTemplateAdminController {
             template.setBodyTemplate(request.bodyTemplate());
         }
         template = notificationTemplateRepository.save(template);
+        java.util.Map<String, Object> after = new java.util.LinkedHashMap<>();
+        after.put("subject", template.getSubjectTemplate());
+        after.put("body", template.getBodyTemplate());
+        auditService.recordForCurrentUser("NOTIFICATION_TEMPLATE_UPDATED", "NOTIFICATION_TEMPLATE", id, before, after);
         return toResponse(template);
     }
 

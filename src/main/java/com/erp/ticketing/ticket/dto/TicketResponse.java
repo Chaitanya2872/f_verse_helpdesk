@@ -32,6 +32,19 @@ public record TicketResponse(
         Instant resolvedAt,
         Instant closedAt,
         String slaStatus,
-        Long slaPolicyId
+        Long slaPolicyId,
+        String publicId,
+        Long version,
+        Long creatorId,
+        String creatorName,
+        String confidentiality,
+        String resolutionCode,
+        String resolutionSummary,
+        Long resolvedById,
+        String resolvedByName,
+        int reopenCount,
+        String impact,
+        String urgency,
+        String externalRef
 ) {
 }

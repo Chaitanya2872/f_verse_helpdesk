@@ -25,6 +25,9 @@ app:
   sla:
     monitoring:
       enabled: false
+  approvals:
+    timeout-job:
+      enabled: false
   notifications:
     email-enabled: false
 

@@ -10,6 +10,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.util.HashSet;
+import java.util.Set;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -89,6 +93,55 @@ public class SlaCalculationService {
         return new SlaDueDates(firstResponseDue, resolutionDue);
     }
 
+    /** Working minutes left between {@code now} and {@code due} on the policy's calendar; never negative. */
+    public long remainingMinutes(Instant now, Instant due, SlaPolicy policy) {
+        if (due == null || !due.isAfter(now)) {
+            return 0;
+        }
+        SlaCalendar calendar = policy == null ? null : policy.getCalendar();
+        if (calendar == null || calendar.getWorkingHoursJson() == null || calendar.getWorkingHoursJson().isEmpty()) {
+            return Duration.between(now, due).toMinutes();
+        }
+        ZoneId zone = ZoneId.of(calendar.getTimezone() != null ? calendar.getTimezone() : "UTC");
+        Set<LocalDate> holidays = holidays(calendar);
+        ZonedDateTime start = now.atZone(zone);
+        ZonedDateTime end = due.atZone(zone);
+        long total = 0;
+        for (LocalDate day = start.toLocalDate(); !day.isAfter(end.toLocalDate()); day = day.plusDays(1)) {
+            DayWindow window = holidays.contains(day) ? null : windowFor(day.getDayOfWeek(), calendar.getWorkingHoursJson());
+            if (window == null) {
+                continue;
+            }
+            ZonedDateTime windowStart = day.atTime(window.start()).atZone(zone);
+            ZonedDateTime windowEnd = day.atTime(window.end()).atZone(zone);
+            ZonedDateTime from = start.isAfter(windowStart) ? start : windowStart;
+            ZonedDateTime to = end.isBefore(windowEnd) ? end : windowEnd;
+            if (to.isAfter(from)) {
+                total += Duration.between(from, to).toMinutes();
+            }
+        }
+        return total;
+    }
+
+    /** Adds working minutes on the policy's calendar to {@code from} (resume after a pause). */
+    public Instant addMinutes(Instant from, long minutes, SlaPolicy policy) {
+        return addWorkingMinutes(from, (int) Math.min(minutes, Integer.MAX_VALUE), policy == null ? null : policy.getCalendar());
+    }
+
+    private Set<LocalDate> holidays(SlaCalendar calendar) {
+        Set<LocalDate> result = new HashSet<>();
+        if (calendar.getHolidaysJson() != null) {
+            for (String h : calendar.getHolidaysJson()) {
+                try {
+                    result.add(LocalDate.parse(h));
+                } catch (DateTimeParseException ignored) {
+                    // Admin input is validated on save; a corrupt row must not break SLA maths.
+                }
+            }
+        }
+        return result;
+    }
+
     private Instant addWorkingMinutes(Instant from, int minutes, SlaCalendar calendar) {
         if (calendar == null || calendar.getWorkingHoursJson() == null || calendar.getWorkingHoursJson().isEmpty()) {
             return from.plus(Duration.ofMinutes(minutes));
@@ -96,6 +149,7 @@ public class SlaCalculationService {
 
         Map<String, Object> workingHours = calendar.getWorkingHoursJson();
         ZoneId zone = ZoneId.of(calendar.getTimezone() != null ? calendar.getTimezone() : "UTC");
+        Set<LocalDate> holidays = holidays(calendar);
         ZonedDateTime cursor = from.atZone(zone);
         long remaining = minutes;
         int daysScanned = 0;
@@ -106,7 +160,7 @@ public class SlaCalculationService {
                         "SLA calendar '" + calendar.getName() + "' has no working hours configured on any day");
             }
 
-            DayWindow window = windowFor(cursor.getDayOfWeek(), workingHours);
+            DayWindow window = holidays.contains(cursor.toLocalDate()) ? null : windowFor(cursor.getDayOfWeek(), workingHours);
             if (window == null) {
                 cursor = cursor.plusDays(1).with(LocalTime.MIDNIGHT);
                 daysScanned++;

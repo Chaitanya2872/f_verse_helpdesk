@@ -44,8 +44,8 @@ public class AttachmentController {
     }
 
     @GetMapping("/api/helpdesk/attachments/{id}/download")
-    public ResponseEntity<Resource> download(@PathVariable Long id) {
-        Attachment attachment = attachmentService.getRequired(id);
+    public ResponseEntity<Resource> download(@PathVariable Long id, @AuthenticationPrincipal ErpUserPrincipal principal) {
+        Attachment attachment = attachmentService.getAuthorized(id, principal);
         Path filePath = attachmentService.resolveStoragePath(attachment);
         Resource resource = new FileSystemResource(filePath);
 

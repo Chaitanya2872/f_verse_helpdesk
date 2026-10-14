@@ -76,7 +76,8 @@ public class BulkTicketActionService {
             case "CHANGE_PRIORITY" -> new TicketUpdateRequest(
                     null, null, null, toRequiredString(value, action), null, null, null, null, null, null);
             case "CANCEL" -> new TicketUpdateRequest(
-                    null, null, null, null, "CANCELLED", null, null, null, null, null);
+                    null, null, null, null, "CANCELLED", null, null, null, null, null,
+                    null, null, null, "Cancelled via bulk action", null, null, null);
             default -> throw new BadRequestException("Invalid action: " + action);
         };
     }

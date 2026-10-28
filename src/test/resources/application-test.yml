@@ -30,6 +30,9 @@ app:
       enabled: false
   notifications:
     email-enabled: false
+  # No Asset Manager runs alongside the tests; AssetManagerClientTest covers that contract with a mock server.
+  asset-manager:
+    enabled: false
 
 logging:
   level:

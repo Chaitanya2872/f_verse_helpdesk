@@ -2,6 +2,7 @@ package com.erp.ticketing.reference;
 
 import com.erp.ticketing.common.BadRequestException;
 import com.erp.ticketing.common.NotFoundException;
+import com.erp.ticketing.integration.asset.AssetManagerClient;
 import com.erp.ticketing.security.ErpUserPrincipal;
 import com.erp.ticketing.ticket.model.Ticket;
 import com.erp.ticketing.ticket.repository.TicketRepository;
@@ -25,7 +26,9 @@ import java.util.regex.Pattern;
  * (assets, applications, customers, orders...). Only the source system, type, id and a short label are
  * stored, so the helpdesk never becomes a second authoritative inventory, and holding a reference
  * never grants access to the record itself (BRS 16.1, 16.4). Whether the record still exists can only
- * be checked where an integration is connected; none is configured here, so references are unverified.
+ * be checked where an integration is connected: assets from the Asset Manager (source system
+ * {@value AssetManagerClient#SOURCE_SYSTEM}) are checked there and take its name as their label while that
+ * integration is enabled; every other reference is unverified.
  */
 @Service
 public class ReferenceService {
@@ -43,13 +46,15 @@ public class ReferenceService {
     private final TicketRepository ticketRepository;
     private final TicketAccessService accessService;
     private final UserService userService;
+    private final AssetManagerClient assetManager;
 
     public ReferenceService(JdbcTemplate jdbc, TicketRepository ticketRepository, TicketAccessService accessService,
-                            UserService userService) {
+                            UserService userService, AssetManagerClient assetManager) {
         this.jdbc = jdbc;
         this.ticketRepository = ticketRepository;
         this.accessService = accessService;
         this.userService = userService;
+        this.assetManager = assetManager;
     }
 
     public record Reference(Long id, String sourceSystem, String entityType, String entityId, String label,
@@ -147,6 +152,16 @@ public class ReferenceService {
                     label = s;
                     break;
                 }
+            }
+        }
+        if (AssetManagerClient.SOURCE_SYSTEM.equalsIgnoreCase(source)) {
+            source = AssetManagerClient.SOURCE_SYSTEM;
+            if ("ASSET".equals(type) && assetManager.isEnabled()) {
+                // The Asset Manager is the source of truth: the asset must exist there, and its name wins.
+                final String assetId = id;
+                label = assetManager.find(assetId)
+                        .orElseThrow(() -> new NotFoundException("Asset not found in the Asset Manager: " + assetId))
+                        .label();
             }
         }
         if (label != null) {

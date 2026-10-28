@@ -45,6 +45,11 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnavailable(ServiceUnavailableException ex, HttpServletRequest request) {
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), request);
+    }
+
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<Map<String, Object>> handleAuthentication(AuthenticationException ex, HttpServletRequest request) {
         return build(HttpStatus.UNAUTHORIZED, ex.getMessage(), request);

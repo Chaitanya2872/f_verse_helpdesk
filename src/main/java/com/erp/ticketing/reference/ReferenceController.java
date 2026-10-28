@@ -1,5 +1,6 @@
 package com.erp.ticketing.reference;
 
+import com.erp.ticketing.integration.asset.AssetManagerClient;
 import com.erp.ticketing.security.ErpUserPrincipal;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -20,9 +21,11 @@ import java.util.List;
 public class ReferenceController {
 
     private final ReferenceService service;
+    private final AssetManagerClient assetManager;
 
-    public ReferenceController(ReferenceService service) {
+    public ReferenceController(ReferenceService service, AssetManagerClient assetManager) {
         this.service = service;
+        this.assetManager = assetManager;
     }
 
     // ---- tickets (anyone who can see the ticket)
@@ -103,13 +106,19 @@ public class ReferenceController {
         return ResponseEntity.noContent().build();
     }
 
-    // ---- lookups: no ERP/asset system is connected, so there is nothing to search yet
+    // ---- lookups
+
+    /** Assets from the Asset Manager; empty while that integration is switched off. */
+    @GetMapping("/erp/assets")
+    public List<AssetManagerClient.AssetSummary> assets(@RequestParam(required = false) String query) {
+        return assetManager.search(query);
+    }
 
     /**
-     * Search endpoints the selector calls. They return an empty list until an integration owns the
-     * source of truth (BRS 14.4); references are then entered by id and label instead.
+     * Search endpoints the selector calls for systems that are not connected. They return an empty list
+     * until an integration owns the source of truth (BRS 14.4); references are then entered by id and label instead.
      */
-    @GetMapping({"/erp/customers", "/erp/sales-orders", "/erp/assets"})
+    @GetMapping({"/erp/customers", "/erp/sales-orders"})
     public List<Object> lookups(@RequestParam(required = false) String query) {
         return List.of();
     }

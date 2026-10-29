@@ -71,7 +71,7 @@ class TicketControllerIT {
         JsonNode created = objectMapper.readTree(result.getResponse().getContentAsString());
         String ticketNumber = created.get("ticketNumber").asText();
         int currentYear = java.time.Year.now(java.time.ZoneOffset.UTC).getValue();
-        assertThat(ticketNumber).matches("TKT-" + currentYear + "-\\d{6}");
+        assertThat(ticketNumber).matches("[A-Z0-9]{2,5}-" + currentYear + "-\\d{6}");
     }
 
     @Test

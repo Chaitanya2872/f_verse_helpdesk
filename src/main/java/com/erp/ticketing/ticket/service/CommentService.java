@@ -1,5 +1,7 @@
 package com.erp.ticketing.ticket.service;
 
+import com.erp.ticketing.automation.model.AutomationRule;
+import com.erp.ticketing.automation.service.AutomationService;
 import com.erp.ticketing.common.NotFoundException;
 import com.erp.ticketing.security.ErpUserPrincipal;
 import com.erp.ticketing.ticket.dto.CommentCreateRequest;
@@ -24,9 +26,14 @@ public class CommentService {
     private final TicketRepository ticketRepository;
     private final UserService userService;
     private final ActivityLogService activityLogService;
+    private final TicketAccessService accessService;
+    private final AutomationService automationService;
 
     public CommentService(CommentRepository commentRepository, TicketRepository ticketRepository,
-                           UserService userService, ActivityLogService activityLogService) {
+                           UserService userService, ActivityLogService activityLogService,
+                           TicketAccessService accessService, AutomationService automationService) {
+        this.accessService = accessService;
+        this.automationService = automationService;
         this.commentRepository = commentRepository;
         this.ticketRepository = ticketRepository;
         this.userService = userService;
@@ -56,6 +63,9 @@ public class CommentService {
             activityLogService.logFieldChanged(ticket, author, "firstResponseAt", null, now.toString());
         }
 
+        automationService.fire(AutomationRule.Trigger.COMMENT_ADDED, ticket,
+                java.util.Map.of("byRequester", isRequesterOnly(principal)));
+
         return toResponse(comment);
     }
 
@@ -74,17 +84,12 @@ public class CommentService {
     private Ticket requireVisibleTicket(Long ticketId, ErpUserPrincipal principal, User currentUser) {
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException("Ticket not found: " + ticketId));
-        if (isRequesterOnly(principal) && !ticket.getRequester().getId().equals(currentUser.getId())) {
-            throw new NotFoundException("Ticket not found: " + ticketId);
-        }
+        accessService.assertVisible(ticket, principal, currentUser);
         return ticket;
     }
 
     private boolean isRequesterOnly(ErpUserPrincipal principal) {
-        Set<String> roles = principal.roles();
-        boolean hasElevatedRole = roles.stream().anyMatch(r ->
-                "AGENT".equalsIgnoreCase(r) || "MANAGER".equalsIgnoreCase(r) || "ADMIN".equalsIgnoreCase(r));
-        return !hasElevatedRole;
+        return accessService.isRequesterOnly(principal);
     }
 
     private CommentResponse toResponse(Comment comment) {

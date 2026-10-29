@@ -51,3 +51,24 @@ app:
     # SMTP settings live only in notifications-service.
     email-enabled: ${HELPDESK_EMAIL_ENABLED:true}
     integration-url: ${INTEGRATION_SERVICE_URL:http://integration-service}
+  # Connection to the separate Asset Manager service (asset-management). Tickets, problems, changes and
+  # major incidents reference its assets by id; the lookup searches it and a new ASSET_MANAGER reference
+  # must exist there. Inside compose, point ASSET_MANAGER_BASE_URL at http://asset-management:8088.
+  asset-manager:
+    enabled: ${ASSET_MANAGER_ENABLED:true}
+    base-url: ${ASSET_MANAGER_BASE_URL:http://localhost:8088}
+    connect-timeout: ${ASSET_MANAGER_CONNECT_TIMEOUT:3s}
+    read-timeout: ${ASSET_MANAGER_READ_TIMEOUT:10s}
+  # Hand-over of ticket events to the external notification-service (see docs/notification-integration.md).
+  # Off until NOTIFICATION_SERVICE_ENABLED=true; the secret must match INTERNAL_SERVICE_SECRET over there.
+  notification-service:
+    enabled: ${NOTIFICATION_SERVICE_ENABLED:false}
+    base-url: ${NOTIFICATION_SERVICE_BASE_URL:http://localhost:8092}
+    internal-secret: ${NOTIFICATION_SERVICE_INTERNAL_SECRET:}
+    connect-timeout: ${NOTIFICATION_SERVICE_CONNECT_TIMEOUT:3s}
+    read-timeout: ${NOTIFICATION_SERVICE_READ_TIMEOUT:15s}
+    app-base-url: ${HELPDESK_APP_BASE_URL:http://localhost:5173}
+    max-attempts: ${NOTIFICATION_SERVICE_MAX_ATTEMPTS:6}
+    retry-base-delay: ${NOTIFICATION_SERVICE_RETRY_BASE_DELAY:30s}
+    retry-max-delay: ${NOTIFICATION_SERVICE_RETRY_MAX_DELAY:15m}
+    poll-interval-ms: ${NOTIFICATION_SERVICE_POLL_INTERVAL_MS:5000}

@@ -1,5 +1,6 @@
 package com.erp.ticketing.routing.service;
 
+import com.erp.ticketing.audit.service.AuditService;
 import com.erp.ticketing.common.NotFoundException;
 import com.erp.ticketing.routing.dto.RoutingResolution;
 import com.erp.ticketing.routing.dto.RoutingRuleRequest;
@@ -29,12 +30,15 @@ public class RoutingRuleService {
     private final CategoryRepository categoryRepository;
     private final DepartmentRepository departmentRepository;
     private final UserService userService;
+    private final AuditService auditService;
 
     public RoutingRuleService(RoutingRuleRepository routingRuleRepository,
                                TicketTypeRepository ticketTypeRepository,
                                CategoryRepository categoryRepository,
                                DepartmentRepository departmentRepository,
-                               UserService userService) {
+                               UserService userService,
+                               AuditService auditService) {
+        this.auditService = auditService;
         this.routingRuleRepository = routingRuleRepository;
         this.ticketTypeRepository = ticketTypeRepository;
         this.categoryRepository = categoryRepository;
@@ -84,6 +88,7 @@ public class RoutingRuleService {
         RoutingRule rule = new RoutingRule();
         applyRequest(rule, request);
         rule = routingRuleRepository.save(rule);
+        auditService.recordForCurrentUser("ROUTING_RULE_CREATED", "ROUTING_RULE", rule.getId(), null, snapshot(rule));
         return toResponse(rule);
     }
 
@@ -91,9 +96,24 @@ public class RoutingRuleService {
     public RoutingRuleResponse update(Long id, RoutingRuleRequest request) {
         RoutingRule rule = routingRuleRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Routing rule not found: " + id));
+        java.util.Map<String, Object> before = snapshot(rule);
         applyRequest(rule, request);
         rule = routingRuleRepository.save(rule);
+        auditService.recordForCurrentUser("ROUTING_RULE_UPDATED", "ROUTING_RULE", id, before, snapshot(rule));
         return toResponse(rule);
+    }
+
+    private java.util.Map<String, Object> snapshot(RoutingRule r) {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("name", r.getName());
+        m.put("orderIndex", r.getOrderIndex());
+        m.put("ticketTypeId", r.getTicketType() != null ? r.getTicketType().getId() : null);
+        m.put("categoryId", r.getCategory() != null ? r.getCategory().getId() : null);
+        m.put("priority", r.getPriority() != null ? r.getPriority().name() : null);
+        m.put("departmentId", r.getDepartment() != null ? r.getDepartment().getId() : null);
+        m.put("assigneeId", r.getAssignee() != null ? r.getAssignee().getId() : null);
+        m.put("active", r.isActive());
+        return m;
     }
 
     private void applyRequest(RoutingRule rule, RoutingRuleRequest request) {

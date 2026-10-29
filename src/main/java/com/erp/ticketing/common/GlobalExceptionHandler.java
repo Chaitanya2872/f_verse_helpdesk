@@ -3,6 +3,7 @@ package com.erp.ticketing.common;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.AuthenticationException;
@@ -26,6 +27,27 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNotFound(NotFoundException ex, HttpServletRequest request) {
         return build(HttpStatus.NOT_FOUND, ex.getMessage(), request);
+    }
+
+    @ExceptionHandler({ConflictException.class, ObjectOptimisticLockingFailureException.class})
+    public ResponseEntity<Map<String, Object>> handleConflict(Exception ex, HttpServletRequest request) {
+        String message = ex instanceof ConflictException
+                ? ex.getMessage()
+                : "The record was modified by someone else - reload and retry";
+        return build(HttpStatus.CONFLICT, message, request);
+    }
+
+    @ExceptionHandler(FieldValidationException.class)
+    public ResponseEntity<Map<String, Object>> handleFieldValidation(FieldValidationException ex, HttpServletRequest request) {
+        ResponseEntity<Map<String, Object>> base = build(HttpStatus.BAD_REQUEST, "Form validation failed", request);
+        Map<String, Object> body = new LinkedHashMap<>(base.getBody());
+        body.put("fieldErrors", ex.getErrors());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleUnavailable(ServiceUnavailableException ex, HttpServletRequest request) {
+        return build(HttpStatus.SERVICE_UNAVAILABLE, ex.getMessage(), request);
     }
 
     @ExceptionHandler(AuthenticationException.class)

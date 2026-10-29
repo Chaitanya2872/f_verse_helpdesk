@@ -33,6 +33,8 @@ import com.erp.ticketing.ticket.repository.TicketTypeRepository;
 import com.erp.ticketing.ticket.service.TicketService;
 import com.erp.ticketing.user.model.User;
 import com.erp.ticketing.user.repository.UserRepository;
+import com.erp.ticketing.audit.service.AuditService;
+import com.erp.ticketing.ticket.service.TicketAccessService;
 import com.erp.ticketing.user.service.UserService;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -80,7 +82,7 @@ public class ReportingService {
             EnumSet.of(TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED);
 
     private static final int DEFAULT_TREND_DAYS = 30;
-    private static final int MAX_TREND_DAYS = 90;
+    private static final int MAX_TREND_DAYS = 366;
 
     private final TicketRepository ticketRepository;
     private final TicketTypeRepository ticketTypeRepository;
@@ -90,6 +92,8 @@ public class ReportingService {
     private final DepartmentRepository departmentRepository;
     private final DepartmentMemberRepository departmentMemberRepository;
     private final CsatSurveyRepository csatSurveyRepository;
+    private final TicketAccessService accessService;
+    private final AuditService auditService;
 
     public ReportingService(TicketRepository ticketRepository,
                              TicketTypeRepository ticketTypeRepository,
@@ -98,7 +102,11 @@ public class ReportingService {
                              UserRepository userRepository,
                              DepartmentRepository departmentRepository,
                              DepartmentMemberRepository departmentMemberRepository,
-                             CsatSurveyRepository csatSurveyRepository) {
+                             CsatSurveyRepository csatSurveyRepository,
+                             TicketAccessService accessService,
+                             AuditService auditService) {
+        this.accessService = accessService;
+        this.auditService = auditService;
         this.ticketRepository = ticketRepository;
         this.ticketTypeRepository = ticketTypeRepository;
         this.ticketService = ticketService;
@@ -109,9 +117,18 @@ public class ReportingService {
         this.csatSurveyRepository = csatSurveyRepository;
     }
 
+    /** Reports only ever count tickets the caller may see; restricted tickets and other departments drop out. */
+    private List<Ticket> scopedAll(Specification<Ticket> spec) {
+        return ticketRepository.findAll(Specification.where(spec).and(accessService.currentVisibility()));
+    }
+
+    private long scopedCount(Specification<Ticket> spec) {
+        return ticketRepository.count(Specification.where(spec).and(accessService.currentVisibility()));
+    }
+
     @Transactional(readOnly = true)
     public ReportSummaryResponse summary(String dateFrom, String dateTo, Long typeId, Long departmentId) {
-        List<Ticket> tickets = ticketRepository.findAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
+        List<Ticket> tickets = scopedAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
 
         Map<String, Long> byStatus = computeByStatus(tickets);
         Map<String, Long> byPriority = computeByPriority(tickets);
@@ -128,7 +145,7 @@ public class ReportingService {
 
     @Transactional(readOnly = true)
     public SlaComplianceResponse slaCompliance(String dateFrom, String dateTo, Long typeId, Long departmentId) {
-        List<Ticket> tickets = ticketRepository.findAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
+        List<Ticket> tickets = scopedAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
 
         List<Ticket> evaluated = tickets.stream()
                 .filter(t -> t.getSlaPolicyId() != null)
@@ -151,7 +168,7 @@ public class ReportingService {
      */
     @Transactional(readOnly = true)
     public List<TicketsByTypeResponse> ticketsByType(String dateFrom, String dateTo, Long typeId, Long departmentId) {
-        List<Ticket> tickets = ticketRepository.findAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
+        List<Ticket> tickets = scopedAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
         Map<Long, Long> counts = tickets.stream()
                 .collect(Collectors.groupingBy(t -> t.getType().getId(), Collectors.counting()));
 
@@ -203,14 +220,14 @@ public class ReportingService {
         Instant thirtyDaysAgo = now.minus(30, ChronoUnit.DAYS);
         Specification<Ticket> byRequester = (root, query, cb) -> cb.equal(root.get("requester").get("id"), userId);
 
-        long myOpenTickets = ticketRepository.count(byRequester.and(
+        long myOpenTickets = scopedCount(byRequester.and(
                 (root, query, cb) -> cb.not(root.get("status").in(TERMINAL_STATUSES))));
-        long myAwaitingResponse = ticketRepository.count(byRequester.and(
+        long myAwaitingResponse = scopedCount(byRequester.and(
                 (root, query, cb) -> cb.equal(root.get("status"), TicketStatus.WAITING_CUSTOMER)));
-        long myResolvedLast30Days = ticketRepository.count(byRequester.and(
+        long myResolvedLast30Days = scopedCount(byRequester.and(
                 (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("resolvedAt"), thirtyDaysAgo)));
 
-        List<Ticket> resolvedMine = ticketRepository.findAll(byRequester.and(
+        List<Ticket> resolvedMine = scopedAll(byRequester.and(
                 (root, query, cb) -> cb.isNotNull(root.get("resolvedAt"))));
         Double avgResolutionMinutesMine = average(resolvedMine.stream()
                 .map(t -> (double) Duration.between(t.getCreatedAt(), t.getResolvedAt()).toMinutes()));
@@ -223,16 +240,16 @@ public class ReportingService {
         Instant fourHoursFromNow = now.plus(4, ChronoUnit.HOURS);
         Specification<Ticket> byAssignee = (root, query, cb) -> cb.equal(root.get("assignee").get("id"), userId);
 
-        long myOpenTickets = ticketRepository.count(byAssignee.and(
+        long myOpenTickets = scopedCount(byAssignee.and(
                 (root, query, cb) -> cb.not(root.get("status").in(TERMINAL_STATUSES))));
-        long myOverdueTickets = ticketRepository.count(byAssignee.and(
+        long myOverdueTickets = scopedCount(byAssignee.and(
                 (root, query, cb) -> cb.isTrue(root.get("slaBreached"))));
-        long slaBreachRiskNext4h = ticketRepository.count(byAssignee.and((root, query, cb) -> cb.and(
+        long slaBreachRiskNext4h = scopedCount(byAssignee.and((root, query, cb) -> cb.and(
                 cb.isFalse(root.get("slaBreached")),
                 cb.between(root.get("resolutionDue"), now, fourHoursFromNow),
                 cb.not(root.get("status").in(TERMINAL_STATUSES)))));
 
-        List<Ticket> withFirstResponse = ticketRepository.findAll(byAssignee.and(
+        List<Ticket> withFirstResponse = scopedAll(byAssignee.and(
                 (root, query, cb) -> cb.isNotNull(root.get("firstResponseAt"))));
         Double avgFirstResponseMinutesMine = average(withFirstResponse.stream()
                 .map(t -> (double) Duration.between(t.getCreatedAt(), t.getFirstResponseAt()).toMinutes()));
@@ -256,9 +273,9 @@ public class ReportingService {
 
         Instant sevenDaysAgo = Instant.now().minus(7, ChronoUnit.DAYS);
 
-        long departmentOpenTickets = ticketRepository.count(scope.and(
+        long departmentOpenTickets = scopedCount(scope.and(
                 (root, query, cb) -> cb.not(root.get("status").in(TERMINAL_STATUSES))));
-        long departmentOverdueTickets = ticketRepository.count(scope.and(
+        long departmentOverdueTickets = scopedCount(scope.and(
                 (root, query, cb) -> cb.isTrue(root.get("slaBreached"))));
         // Simplification (per spec): rather than joining activity_logs on
         // action_type='SLA_BREACHED' and correlating back to department through
@@ -266,11 +283,11 @@ public class ReportingService {
         // updatedAt falls in the last 7 days. SlaMonitoringJob saves the ticket
         // at the moment it flips slaBreached=true, so updatedAt is a close
         // proxy for "breached in the last 7 days" without a second query.
-        long slaBreachCountLast7Days = ticketRepository.count(scope.and((root, query, cb) -> cb.and(
+        long slaBreachCountLast7Days = scopedCount(scope.and((root, query, cb) -> cb.and(
                 cb.isTrue(root.get("slaBreached")),
                 cb.greaterThanOrEqualTo(root.get("updatedAt"), sevenDaysAgo))));
 
-        List<Ticket> resolvedInScope = ticketRepository.findAll(scope.and(
+        List<Ticket> resolvedInScope = scopedAll(scope.and(
                 (root, query, cb) -> cb.isNotNull(root.get("resolvedAt"))));
         Double avgResolutionMinutesDepartment = average(resolvedInScope.stream()
                 .map(t -> (double) Duration.between(t.getCreatedAt(), t.getResolvedAt()).toMinutes()));
@@ -280,10 +297,10 @@ public class ReportingService {
 
     private AdminDashboardKpis adminKpis() {
         Instant sevenDaysAgo = Instant.now().minus(7, ChronoUnit.DAYS);
-        long totalOpenTickets = ticketRepository.count(
+        long totalOpenTickets = scopedCount(
                 (root, query, cb) -> cb.not(root.get("status").in(TERMINAL_STATUSES)));
         // Same simplification as the manager variant above, org-wide (no department scoping).
-        long totalSlaBreachesLast7Days = ticketRepository.count((root, query, cb) -> cb.and(
+        long totalSlaBreachesLast7Days = scopedCount((root, query, cb) -> cb.and(
                 cb.isTrue(root.get("slaBreached")),
                 cb.greaterThanOrEqualTo(root.get("updatedAt"), sevenDaysAgo)));
         long totalUsers = userRepository.count();
@@ -310,10 +327,10 @@ public class ReportingService {
         Instant from = start.atStartOfDay(ZoneOffset.UTC).toInstant();
         Instant to = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
 
-        List<Ticket> createdInRange = ticketRepository.findAll((root, query, cb) -> cb.and(
+        List<Ticket> createdInRange = scopedAll((root, query, cb) -> cb.and(
                 cb.greaterThanOrEqualTo(root.get("createdAt"), from),
                 cb.lessThan(root.get("createdAt"), to)));
-        List<Ticket> resolvedInRange = ticketRepository.findAll((root, query, cb) -> cb.and(
+        List<Ticket> resolvedInRange = scopedAll((root, query, cb) -> cb.and(
                 cb.isNotNull(root.get("resolvedAt")),
                 cb.greaterThanOrEqualTo(root.get("resolvedAt"), from),
                 cb.lessThan(root.get("resolvedAt"), to)));
@@ -332,7 +349,7 @@ public class ReportingService {
 
     @Transactional(readOnly = true)
     public List<TicketsByStatusResponse> ticketsByStatus(String dateFrom, String dateTo, Long typeId, Long departmentId) {
-        List<Ticket> tickets = ticketRepository.findAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
+        List<Ticket> tickets = scopedAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
         return computeByStatus(tickets).entrySet().stream()
                 .map(e -> new TicketsByStatusResponse(e.getKey(), e.getValue()))
                 .toList();
@@ -340,7 +357,7 @@ public class ReportingService {
 
     @Transactional(readOnly = true)
     public List<TicketsByPriorityResponse> ticketsByPriority(String dateFrom, String dateTo, Long typeId, Long departmentId) {
-        List<Ticket> tickets = ticketRepository.findAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
+        List<Ticket> tickets = scopedAll(buildCommonSpec(dateFrom, dateTo, typeId, departmentId));
         return computeByPriority(tickets).entrySet().stream()
                 .map(e -> new TicketsByPriorityResponse(e.getKey(), e.getValue()))
                 .toList();
@@ -370,7 +387,7 @@ public class ReportingService {
                 cb.isNotNull(root.get("assignee")),
                 cb.not(root.get("status").in(TERMINAL_STATUSES))));
 
-        List<Ticket> tickets = ticketRepository.findAll(openAssignedInScope);
+        List<Ticket> tickets = scopedAll(openAssignedInScope);
         Map<Long, Long> countsByAssignee = tickets.stream()
                 .collect(Collectors.groupingBy(t -> t.getAssignee().getId(), Collectors.counting()));
         Map<Long, String> namesByAssignee = tickets.stream()
@@ -398,7 +415,7 @@ public class ReportingService {
         Instant from = start.atStartOfDay(ZoneOffset.UTC).toInstant();
         Instant to = today.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
 
-        List<Ticket> candidates = ticketRepository.findAll((root, query, cb) -> cb.or(
+        List<Ticket> candidates = scopedAll((root, query, cb) -> cb.or(
                 cb.and(cb.isNotNull(root.get("resolvedAt")),
                         cb.greaterThanOrEqualTo(root.get("resolvedAt"), from), cb.lessThan(root.get("resolvedAt"), to)),
                 cb.and(cb.isNotNull(root.get("closedAt")),
@@ -445,7 +462,7 @@ public class ReportingService {
      * job's actual math; breachType is just a descriptive label layered on top.
      */
     @Transactional(readOnly = true)
-    public List<EscalationResponse> escalations(Long departmentId, Long assigneeId) {
+    public List<EscalationResponse> escalations(Long departmentId, Long assigneeId, ErpUserPrincipal principal) {
         Specification<Ticket> notTerminal = (root, query, cb) -> cb.not(root.get("status").in(TERMINAL_STATUSES));
         Specification<Ticket> breachedOrAtRisk = (root, query, cb) -> cb.or(
                 cb.isTrue(root.get("slaBreached")),
@@ -459,7 +476,10 @@ public class ReportingService {
             spec = spec.and((root, query, cb) -> cb.equal(root.get("assignee").get("id"), assigneeId));
         }
 
-        List<Ticket> tickets = ticketRepository.findAll(spec);
+        // Rows carry titles, so they must respect ticket visibility (restricted tickets, department scope).
+        spec = spec.and(accessService.visibleTo(principal, userService.getOrCreateCurrentUser(principal)));
+
+        List<Ticket> tickets = scopedAll(spec);
         Instant now = Instant.now();
 
         Comparator<Ticket> byBreachFirst = Comparator.comparing((Ticket t) -> t.isSlaBreached() ? 0 : 1);
@@ -518,6 +538,10 @@ public class ReportingService {
         }
 
         List<CsatSurvey> surveys = csatSurveyRepository.findAll(spec);
+        java.util.Set<Long> ticketIds = surveys.stream().map(x -> x.getTicket().getId()).collect(Collectors.toSet());
+        java.util.Set<Long> visibleIds = ticketIds.isEmpty() ? java.util.Set.of()
+                : scopedAll((root, query, cb) -> root.get("id").in(ticketIds)).stream().map(Ticket::getId).collect(Collectors.toSet());
+        surveys = surveys.stream().filter(x -> visibleIds.contains(x.getTicket().getId())).toList();
         long total = surveys.size();
         List<CsatSurvey> submitted = surveys.stream().filter(s -> s.getStatus() == CsatStatus.SUBMITTED).toList();
         long submittedCount = submitted.size();
@@ -556,10 +580,15 @@ public class ReportingService {
         return byPriority;
     }
 
-    @Transactional(readOnly = true)
-    public void streamTicketsCsv(String dateFrom, String dateTo, Long typeId, Long departmentId,
+    /**
+     * Builds the CSV for the caller. Only tickets the caller may see are included, even when specific
+     * ticket ids are requested (BRS 17.3, AT-017), and every export is recorded in the audit trail.
+     * Built eagerly on the request thread so the audit row and the caller identity are never lost.
+     */
+    @Transactional
+    public byte[] buildTicketsCsv(String dateFrom, String dateTo, Long typeId, Long departmentId,
                                   String status, String priority, Long assigneeId, Long requesterId,
-                                  String ticketIds, OutputStream outputStream) throws IOException {
+                                  String ticketIds, ErpUserPrincipal principal) throws IOException {
         Specification<Ticket> spec;
         if (ticketIds != null && !ticketIds.isBlank()) {
             // "Export selected" from a bulk-action bar: export exactly these
@@ -585,14 +614,37 @@ public class ReportingService {
             }
         }
 
-        List<Ticket> tickets = ticketRepository.findAll(spec);
+        var user = userService.getOrCreateCurrentUser(principal);
+        spec = spec.and(accessService.visibleTo(principal, user));
+        List<Ticket> tickets = scopedAll(spec);
+        auditService.record(user, "TICKETS_EXPORTED", "TICKET_EXPORT", null, null, exportDescription(
+                dateFrom, dateTo, typeId, departmentId, status, priority, assigneeId, requesterId, ticketIds, tickets.size()));
 
+        java.io.ByteArrayOutputStream outputStream = new java.io.ByteArrayOutputStream();
         PrintWriter writer = new PrintWriter(new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
         writer.write("Ticket Number,Title,Type,Category,Priority,Status,Requester,Assignee,Department,Created At,Resolved At,SLA Status\r\n");
         for (Ticket ticket : tickets) {
             writer.write(csvRow(ticket));
         }
         writer.flush();
+        return outputStream.toByteArray();
+    }
+
+    private Map<String, Object> exportDescription(String dateFrom, String dateTo, Long typeId, Long departmentId,
+                                                  String status, String priority, Long assigneeId, Long requesterId,
+                                                  String ticketIds, int rows) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("rows", rows);
+        m.put("dateFrom", dateFrom);
+        m.put("dateTo", dateTo);
+        m.put("typeId", typeId);
+        m.put("departmentId", departmentId);
+        m.put("status", status);
+        m.put("priority", priority);
+        m.put("assigneeId", assigneeId);
+        m.put("requesterId", requesterId);
+        m.put("ticketIds", ticketIds);
+        return m;
     }
 
     private String csvRow(Ticket ticket) {

@@ -21,7 +21,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import java.util.List;
 
@@ -36,9 +35,21 @@ import java.util.List;
 public class ReportingController {
 
     private final ReportingService reportingService;
+    private final com.erp.ticketing.reporting.service.KpiService kpiService;
 
-    public ReportingController(ReportingService reportingService) {
+    public ReportingController(ReportingService reportingService,
+                               com.erp.ticketing.reporting.service.KpiService kpiService) {
         this.reportingService = reportingService;
+        this.kpiService = kpiService;
+    }
+
+    /** Standard KPI set with its definitions, over the tickets the caller may see. */
+    @GetMapping("/kpis")
+    public com.erp.ticketing.reporting.dto.KpiResponse kpis(@RequestParam(required = false) String dateFrom,
+                                                            @RequestParam(required = false) String dateTo,
+                                                            @RequestParam(required = false) Long departmentId,
+                                                            @AuthenticationPrincipal ErpUserPrincipal principal) {
+        return kpiService.compute(dateFrom, dateTo, departmentId, principal);
     }
 
     @GetMapping("/summary")
@@ -109,8 +120,9 @@ public class ReportingController {
 
     @GetMapping("/escalations")
     public List<EscalationResponse> escalations(@RequestParam(required = false) Long departmentId,
-                                                 @RequestParam(required = false) Long assigneeId) {
-        return reportingService.escalations(departmentId, assigneeId);
+                                                 @RequestParam(required = false) Long assigneeId,
+                                                 @AuthenticationPrincipal ErpUserPrincipal principal) {
+        return reportingService.escalations(departmentId, assigneeId, principal);
     }
 
     @GetMapping("/csat")
@@ -121,7 +133,7 @@ public class ReportingController {
     }
 
     @GetMapping("/tickets/export.csv")
-    public ResponseEntity<StreamingResponseBody> exportCsv(@RequestParam(required = false) String dateFrom,
+    public ResponseEntity<byte[]> exportCsv(@RequestParam(required = false) String dateFrom,
                                                              @RequestParam(required = false) String dateTo,
                                                              @RequestParam(required = false) Long typeId,
                                                              @RequestParam(required = false) Long departmentId,
@@ -129,12 +141,14 @@ public class ReportingController {
                                                              @RequestParam(required = false) String priority,
                                                              @RequestParam(required = false) Long assigneeId,
                                                              @RequestParam(required = false) Long requesterId,
-                                                             @RequestParam(required = false) String ticketIds) {
-        StreamingResponseBody body = outputStream -> reportingService.streamTicketsCsv(
-                dateFrom, dateTo, typeId, departmentId, status, priority, assigneeId, requesterId, ticketIds, outputStream);
+                                                             @RequestParam(required = false) String ticketIds,
+                                                             @AuthenticationPrincipal ErpUserPrincipal principal)
+            throws java.io.IOException {
+        byte[] csv = reportingService.buildTicketsCsv(
+                dateFrom, dateTo, typeId, departmentId, status, priority, assigneeId, requesterId, ticketIds, principal);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("text/csv"))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"tickets-export.csv\"")
-                .body(body);
+                .body(csv);
     }
 }

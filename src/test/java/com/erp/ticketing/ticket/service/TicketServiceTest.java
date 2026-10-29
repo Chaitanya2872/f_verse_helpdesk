@@ -70,13 +70,20 @@ class TicketServiceTest {
 
         ticketService = new TicketService(ticketRepository, ticketTypeRepository, categoryRepository, departmentRepository,
                 departmentMemberRepository, userService, activityLogService, routingRuleService, slaCalculationService,
-                notificationService, csatService);
+                notificationService, csatService,
+                mock(com.erp.ticketing.ticket.service.TicketAccessService.class),
+                mock(com.erp.ticketing.ticket.repository.TicketAssignmentRepository.class),
+                defaultWorkflow(), mock(com.erp.ticketing.approval.service.ApprovalService.class),
+                mock(com.erp.ticketing.sla.service.SlaPauseService.class),
+                mock(com.erp.ticketing.form.service.FormService.class),
+                mock(com.erp.ticketing.automation.service.AutomationService.class));
 
         agentUser = new User();
         agentUser.setId(99L);
         agentUser.setName("Agent Smith");
         when(userService.getOrCreateCurrentUser(any())).thenReturn(agentUser);
         when(ticketRepository.save(any(Ticket.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(ticketRepository.saveAndFlush(any(Ticket.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
     // ------------------------------------------------------------------
@@ -94,7 +101,14 @@ class TicketServiceTest {
                 Arguments.of(TicketStatus.WAITING_CUSTOMER, TicketStatus.RESOLVED),
                 Arguments.of(TicketStatus.WAITING_CUSTOMER, TicketStatus.CANCELLED),
                 Arguments.of(TicketStatus.RESOLVED, TicketStatus.CLOSED),
-                Arguments.of(TicketStatus.RESOLVED, TicketStatus.IN_PROGRESS)
+                Arguments.of(TicketStatus.RESOLVED, TicketStatus.IN_PROGRESS),
+                Arguments.of(TicketStatus.NEW, TicketStatus.TRIAGE),
+                Arguments.of(TicketStatus.TRIAGE, TicketStatus.ASSIGNED),
+                Arguments.of(TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS),
+                Arguments.of(TicketStatus.IN_PROGRESS, TicketStatus.WAITING_APPROVAL),
+                Arguments.of(TicketStatus.WAITING_APPROVAL, TicketStatus.IN_PROGRESS),
+                Arguments.of(TicketStatus.RESOLVED, TicketStatus.REOPENED),
+                Arguments.of(TicketStatus.REOPENED, TicketStatus.IN_PROGRESS)
         );
     }
 
@@ -106,7 +120,10 @@ class TicketServiceTest {
                 Arguments.of(TicketStatus.CLOSED, TicketStatus.IN_PROGRESS),
                 Arguments.of(TicketStatus.CANCELLED, TicketStatus.NEW),
                 Arguments.of(TicketStatus.RESOLVED, TicketStatus.CANCELLED),
-                Arguments.of(TicketStatus.WAITING_CUSTOMER, TicketStatus.CLOSED)
+                Arguments.of(TicketStatus.WAITING_CUSTOMER, TicketStatus.CLOSED),
+                Arguments.of(TicketStatus.WAITING_APPROVAL, TicketStatus.RESOLVED),
+                Arguments.of(TicketStatus.CLOSED, TicketStatus.REOPENED),
+                Arguments.of(TicketStatus.NEW, TicketStatus.REOPENED)
         );
     }
 
@@ -164,6 +181,70 @@ class TicketServiceTest {
     }
 
     // ------------------------------------------------------------------
+    // Resolution, cancellation, reopen and concurrency rules (BRS 6.3, 20.1)
+    // ------------------------------------------------------------------
+
+    @Test
+    void resolvingWithoutResolutionCodeAndSummaryIsRejected() {
+        Ticket ticket = buildTicket(TicketStatus.IN_PROGRESS);
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        TicketUpdateRequest request = new TicketUpdateRequest(null, null, null, null, "RESOLVED", null, null, null,
+                null, null);
+
+        assertThatThrownBy(() -> ticketService.update(1L, request, agentPrincipal()))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("resolutionCode");
+    }
+
+    @Test
+    void resolvingRecordsCodeSummaryAndResolver() {
+        Ticket ticket = buildTicket(TicketStatus.IN_PROGRESS);
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+
+        var response = ticketService.update(1L, updateRequestWithStatus(TicketStatus.RESOLVED), agentPrincipal());
+
+        assertThat(response.resolutionCode()).isEqualTo("FIXED");
+        assertThat(response.resolutionSummary()).isEqualTo("Resolved in test");
+        assertThat(response.resolvedById()).isEqualTo(99L);
+    }
+
+    @Test
+    void cancellingWithoutReasonIsRejected() {
+        Ticket ticket = buildTicket(TicketStatus.NEW);
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        TicketUpdateRequest request = new TicketUpdateRequest(null, null, null, null, "CANCELLED", null, null, null,
+                null, null);
+
+        assertThatThrownBy(() -> ticketService.update(1L, request, agentPrincipal()))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("reason");
+    }
+
+    @Test
+    void reopeningIncrementsCountAndClearsResolvedAt() {
+        Ticket ticket = buildTicket(TicketStatus.RESOLVED);
+        ticket.setResolvedAt(java.time.Instant.now());
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+
+        var response = ticketService.update(1L, updateRequestWithStatus(TicketStatus.REOPENED), agentPrincipal());
+
+        assertThat(response.reopenCount()).isEqualTo(1);
+        assertThat(response.resolvedAt()).isNull();
+    }
+
+    @Test
+    void staleVersionIsRejectedWithConflict() {
+        Ticket ticket = buildTicket(TicketStatus.IN_PROGRESS);
+        ticket.setVersion(5L);
+        when(ticketRepository.findById(1L)).thenReturn(Optional.of(ticket));
+        TicketUpdateRequest request = new TicketUpdateRequest(null, "New title", null, null, null, null, null, null,
+                null, null, 4L, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> ticketService.update(1L, request, agentPrincipal()))
+                .isInstanceOf(com.erp.ticketing.common.ConflictException.class);
+    }
+
+    // ------------------------------------------------------------------
     // Mandatory department enforcement
     // ------------------------------------------------------------------
 
@@ -178,7 +259,13 @@ class TicketServiceTest {
 
         TicketService service = new TicketService(ticketRepository, ticketTypeRepository, categoryRepository,
                 departmentRepository, departmentMemberRepository, userService, activityLogService,
-                noRoutingRuleService, slaCalculationService, notificationService, mock(CsatService.class));
+                noRoutingRuleService, slaCalculationService, notificationService, mock(CsatService.class),
+                mock(com.erp.ticketing.ticket.service.TicketAccessService.class),
+                mock(com.erp.ticketing.ticket.repository.TicketAssignmentRepository.class),
+                defaultWorkflow(), mock(com.erp.ticketing.approval.service.ApprovalService.class),
+                mock(com.erp.ticketing.sla.service.SlaPauseService.class),
+                mock(com.erp.ticketing.form.service.FormService.class),
+                mock(com.erp.ticketing.automation.service.AutomationService.class));
 
         // create() generates a ticket number (via the @PersistenceContext-injected
         // EntityManager) before routing runs, so a mocked EntityManager must be
@@ -292,7 +379,7 @@ class TicketServiceTest {
     private Ticket buildTicket(TicketStatus status) {
         Ticket ticket = new Ticket();
         ticket.setId(1L);
-        ticket.setTicketNumber("TKT-2026-000001");
+        ticket.setTicketNumber("HD-2026-000001");
         TicketType type = new TicketType();
         type.setId(1L);
         type.setName("Incident");
@@ -306,8 +393,16 @@ class TicketServiceTest {
         return ticket;
     }
 
+    /** Real workflow service over an empty store, so the built-in baseline lifecycle applies. */
+    private static com.erp.ticketing.workflow.service.WorkflowService defaultWorkflow() {
+        var repo = mock(com.erp.ticketing.workflow.repository.WorkflowTransitionRepository.class);
+        return new com.erp.ticketing.workflow.service.WorkflowService(repo,
+                mock(com.erp.ticketing.audit.service.AuditService.class));
+    }
+
     private TicketUpdateRequest updateRequestWithStatus(TicketStatus status) {
-        return new TicketUpdateRequest(null, null, null, null, status.name(), null, null, null, null, null);
+        return new TicketUpdateRequest(null, null, null, null, status.name(), null, null, null, null, null,
+                null, "FIXED", "Resolved in test", "Cancelled in test", null, null, null);
     }
 
     private ErpUserPrincipal agentPrincipal() {

@@ -9,6 +9,7 @@ package com.erp.ticketing.department.dto;
  */
 public record DepartmentUpdateRequest(
         String departmentName,
+        String code,
         String description,
         Long managerId,
         Long slaPolicyId

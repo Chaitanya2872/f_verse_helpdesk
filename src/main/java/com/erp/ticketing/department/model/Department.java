@@ -24,6 +24,10 @@ public class Department extends BaseEntity {
     @Column(name = "department_name", nullable = false)
     private String departmentName;
 
+    /** Short prefix for ticket numbers, e.g. "IT" gives IT-2026-000036. */
+    @Column(name = "code", nullable = false, length = 10)
+    private String code;
+
     @Column(name = "description")
     private String description;
 

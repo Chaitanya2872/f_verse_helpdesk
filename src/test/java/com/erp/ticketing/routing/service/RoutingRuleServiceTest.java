@@ -32,7 +32,7 @@ class RoutingRuleServiceTest {
     private final RoutingRuleRepository routingRuleRepository = mock(RoutingRuleRepository.class);
     private final RoutingRuleService service = new RoutingRuleService(routingRuleRepository,
             mock(TicketTypeRepository.class), mock(CategoryRepository.class), mock(DepartmentRepository.class),
-            mock(UserService.class));
+            mock(UserService.class), mock(com.erp.ticketing.audit.service.AuditService.class));
 
     @Test
     void specificRuleWinsOverWildcardWhenBothActiveAndOrderedFirst() {

@@ -6,6 +6,7 @@ import com.erp.ticketing.ticket.dto.BulkActionRequest;
 import com.erp.ticketing.ticket.dto.BulkActionResponse;
 import com.erp.ticketing.ticket.dto.PageResponse;
 import com.erp.ticketing.ticket.dto.TicketCreateRequest;
+import com.erp.ticketing.ticket.dto.TicketFilterExtras;
 import com.erp.ticketing.ticket.dto.TicketResponse;
 import com.erp.ticketing.ticket.dto.TicketSummaryResponse;
 import com.erp.ticketing.ticket.dto.TicketUpdateRequest;
@@ -78,10 +79,16 @@ public class TicketController {
                                               @RequestParam(required = false) String search,
                                               @RequestParam(required = false) String createdFrom,
                                               @RequestParam(required = false) String createdTo,
+                                              @RequestParam(required = false) String externalRef,
+                                              @RequestParam(required = false) String confidentiality,
+                                              @RequestParam(required = false) String resolutionCode,
+                                              @RequestParam(required = false) Boolean reopened,
+                                              @RequestParam(required = false) String source,
                                               @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable,
                                               @AuthenticationPrincipal ErpUserPrincipal principal) {
         return ticketService.list(status, priority, typeId, categoryId, assigneeId, requesterId, departmentId, openOnly,
-                unassigned, slaStatus, search, createdFrom, createdTo, pageable, principal);
+                unassigned, slaStatus, search, createdFrom, createdTo,
+                new TicketFilterExtras(externalRef, confidentiality, resolutionCode, reopened, source), pageable, principal);
     }
 
     /**
@@ -94,6 +101,12 @@ public class TicketController {
     @GetMapping("/summary")
     public TicketSummaryResponse summary(@AuthenticationPrincipal ErpUserPrincipal principal) {
         return ticketService.summary(principal);
+    }
+
+    @GetMapping("/{id}/assignments")
+    public List<com.erp.ticketing.ticket.dto.AssignmentHistoryResponse> assignments(
+            @PathVariable Long id, @AuthenticationPrincipal ErpUserPrincipal principal) {
+        return ticketService.assignmentHistory(id, principal);
     }
 
     @GetMapping("/{id}/activity")

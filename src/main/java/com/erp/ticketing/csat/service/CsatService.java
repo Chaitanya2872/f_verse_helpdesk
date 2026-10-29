@@ -33,9 +33,12 @@ public class CsatService {
     private final TicketRepository ticketRepository;
     private final UserService userService;
     private final NotificationService notificationService;
+    private final com.erp.ticketing.ticket.service.TicketAccessService accessService;
 
     public CsatService(CsatSurveyRepository csatSurveyRepository, TicketRepository ticketRepository,
-                        UserService userService, NotificationService notificationService) {
+                        UserService userService, NotificationService notificationService,
+                        com.erp.ticketing.ticket.service.TicketAccessService accessService) {
+        this.accessService = accessService;
         this.csatSurveyRepository = csatSurveyRepository;
         this.ticketRepository = ticketRepository;
         this.userService = userService;
@@ -75,11 +78,7 @@ public class CsatService {
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException("Ticket not found: " + ticketId));
 
-        if (isRequesterOnly(principal) && !ticket.getRequester().getId().equals(currentUser.getId())) {
-            // 404, matching TicketService.assertVisible/CommentService's pattern -
-            // a plain requester can't even see that another requester's ticket exists.
-            throw new NotFoundException("Ticket not found: " + ticketId);
-        }
+        accessService.assertVisible(ticket, principal, currentUser);
         if (!ticket.getRequester().getId().equals(currentUser.getId())) {
             // Reached only by an elevated role (agent/manager/admin) who CAN see the
             // ticket but must not submit a rating on the requester's behalf - a 400,
@@ -106,9 +105,7 @@ public class CsatService {
         User currentUser = userService.getOrCreateCurrentUser(principal);
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new NotFoundException("Ticket not found: " + ticketId));
-        if (isRequesterOnly(principal) && !ticket.getRequester().getId().equals(currentUser.getId())) {
-            throw new NotFoundException("Ticket not found: " + ticketId);
-        }
+        accessService.assertVisible(ticket, principal, currentUser);
         CsatSurvey survey = csatSurveyRepository.findByTicket_Id(ticketId)
                 .orElseThrow(() -> new NotFoundException("CSAT survey not found for ticket: " + ticketId));
         return toResponse(survey);

@@ -24,4 +24,36 @@ public class TicketType {
 
     @Column(name = "description")
     private String description;
+
+    @Column(name = "instructions")
+    private String instructions;
+
+    @Column(name = "department_id")
+    private Long departmentId;
+
+    @Column(name = "service_owner_id")
+    private Long serviceOwnerId;
+
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "lifecycle_status", nullable = false, length = 20)
+    private Lifecycle lifecycleStatus = Lifecycle.PUBLISHED;
+
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "audience", nullable = false, length = 20)
+    private Audience audience = Audience.ALL;
+
+    @Column(name = "keywords")
+    private String keywords;
+
+    @Column(name = "icon", length = 50)
+    private String icon;
+
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "default_confidentiality", nullable = false, length = 20)
+    private Confidentiality defaultConfidentiality = Confidentiality.STANDARD;
+
+    /** DRAFT and ARCHIVED are hidden from requesters; RETIRED keeps history but takes no new requests. */
+    public enum Lifecycle { DRAFT, PUBLISHED, RETIRED, ARCHIVED }
+
+    public enum Audience { ALL, EMPLOYEE, CUSTOMER }
 }

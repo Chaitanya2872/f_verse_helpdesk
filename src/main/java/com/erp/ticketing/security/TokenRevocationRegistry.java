@@ -62,7 +62,7 @@ public class TokenRevocationRegistry {
 
   public TokenRevocationRegistry(
       @Value("${IDENTITY_SERVICE_URL:http://localhost:8081}") String identityServiceUrl,
-      @Value("${app.security.internal-service-secret:}") String internalServiceSecret,
+      @Value("${app.security.internal-service-secret:${INTERNAL_SERVICE_SECRET:}}") String internalServiceSecret,
       @Value("${app.security.revocation.poll-interval-ms:15000}") long pollIntervalMs,
       @Value("${app.security.revocation.fail-closed:true}") boolean failClosed
   ) {

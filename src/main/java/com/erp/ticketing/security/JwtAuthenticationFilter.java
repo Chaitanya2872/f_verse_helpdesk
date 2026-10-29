@@ -10,6 +10,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -39,13 +40,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final IdentityTokenVerifier identityTokenVerifier;
     private final JwtService jwtService;
     private final UserRoleResolver userRoleResolver;
+    private final TokenRevocationRegistry revocationRegistry;
+    private final boolean localTokensEnabled;
 
     public JwtAuthenticationFilter(IdentityTokenVerifier identityTokenVerifier,
                                    JwtService jwtService,
-                                   UserRoleResolver userRoleResolver) {
+                                   UserRoleResolver userRoleResolver,
+                                   TokenRevocationRegistry revocationRegistry,
+                                   @Value("${app.jwt.local-tokens-enabled:false}") boolean localTokensEnabled) {
         this.identityTokenVerifier = identityTokenVerifier;
         this.jwtService = jwtService;
         this.userRoleResolver = userRoleResolver;
+        this.revocationRegistry = revocationRegistry;
+        this.localTokensEnabled = localTokensEnabled;
     }
 
     @Override
@@ -69,7 +76,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         // null permissions marks a token that did not come from identity-service.
         Set<String> permissions = null;
         if (claims != null) {
+            // Deactivated, offboarded and deleted users and signed-out sessions, from identity's
+            // feed: direct calls and forwarded tokens never pass the gateway's own check.
+            Object sessionId = claims.get("sessionId");
+            if (revocationRegistry.isRevoked(claims.getSubject(),
+                    claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant(),
+                    sessionId == null ? null : String.valueOf(sessionId))) {
+                writeUnauthorized(response, "Invalid or expired token");
+                return;
+            }
             permissions = identityTokenVerifier.extractPermissions(claims);
+        } else if (!localTokensEnabled) {
+            // This service's own HS256 tokens are signed with the platform JWT_SECRET, which every
+            // service holds; only the integration tests mint them. Off unless a profile turns it on.
+            writeUnauthorized(response, "Invalid or expired token");
+            return;
         } else {
             try {
                 claims = jwtService.parseToken(token);

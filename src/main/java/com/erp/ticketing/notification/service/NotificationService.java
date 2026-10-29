@@ -11,10 +11,7 @@ import com.erp.ticketing.ticket.model.Ticket;
 import com.erp.ticketing.user.model.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.mail.SimpleMailMessage;
-import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,9 +23,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Persists notifications and (optionally) attempts email delivery. Delivery
- * failures must never break the ticket operation that triggered them, so any
- * mail-send exception is caught and logged rather than propagated.
+ * Persists notifications and (optionally) attempts email delivery through
+ * notifications-service, via {@link IntegrationEmailClient}. Delivery failures
+ * must never break the ticket operation that triggered them, so they are
+ * logged and recorded as unsent rather than propagated.
  */
 @Service
 public class NotificationService {
@@ -39,17 +37,17 @@ public class NotificationService {
 
     private final NotificationRepository notificationRepository;
     private final NotificationTemplateRepository notificationTemplateRepository;
-    private final ObjectProvider<JavaMailSender> mailSenderProvider;
+    private final IntegrationEmailClient emailClient;
 
     @Value("${app.notifications.email-enabled:false}")
     private boolean emailEnabled;
 
     public NotificationService(NotificationRepository notificationRepository,
                                 NotificationTemplateRepository notificationTemplateRepository,
-                                ObjectProvider<JavaMailSender> mailSenderProvider) {
+                                IntegrationEmailClient emailClient) {
         this.notificationRepository = notificationRepository;
         this.notificationTemplateRepository = notificationTemplateRepository;
-        this.mailSenderProvider = mailSenderProvider;
+        this.emailClient = emailClient;
     }
 
     /**
@@ -160,35 +158,27 @@ public class NotificationService {
         emailNotification.setSubject(subject);
         emailNotification.setBody(body);
 
-        if (attemptEmailSend(recipient, subject, body)) {
+        // Saved first so its id can serve as the idempotency key: a retried relay
+        // hop for the same row is then delivered once.
+        emailNotification = notificationRepository.save(emailNotification);
+        if (attemptEmailSend(recipient, eventType, subject, body, emailNotification.getId())) {
             emailNotification.setSent(true);
             emailNotification.setSentAt(Instant.now());
+            notificationRepository.save(emailNotification);
         }
-        notificationRepository.save(emailNotification);
     }
 
-    private boolean attemptEmailSend(User recipient, String subject, String body) {
+    private boolean attemptEmailSend(User recipient, String eventType, String subject, String body, Long notificationId) {
         if (recipient.getEmail() == null || recipient.getEmail().isBlank()) {
             log.warn("Cannot email user {} - no email address on file", recipient.getId());
             return false;
         }
-        JavaMailSender mailSender = mailSenderProvider.getIfAvailable();
-        if (mailSender == null) {
-            log.warn("app.notifications.email-enabled=true but no JavaMailSender is configured "
-                    + "(spring.mail.host missing); skipping send");
-            return false;
-        }
-        try {
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setTo(recipient.getEmail());
-            message.setSubject(subject);
-            message.setText(body != null ? body : "");
-            mailSender.send(message);
-            return true;
-        } catch (Exception ex) {
-            log.warn("Failed to send email notification to {}: {}", recipient.getEmail(), ex.getMessage());
-            return false;
-        }
+        return emailClient.send(
+                recipient.getEmail(),
+                subject,
+                body != null && !body.isBlank() ? body : subject,
+                eventType,
+                "helpdesk-notification-" + notificationId);
     }
 
     @Transactional(readOnly = true)

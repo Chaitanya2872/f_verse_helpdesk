@@ -15,9 +15,6 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
-  mail:
-    host: localhost
-    port: 1025
 
 app:
   jwt:
@@ -35,3 +32,8 @@ logging:
 eureka:
   client:
     enabled: false
+
+# Helpdesk's own HS256 tokens (JwtService) are accepted only where a profile says so; production
+# accepts identity tokens alone. Revocations are not polled outside a running identity-service.
+app.jwt.local-tokens-enabled: true
+app.security.revocation.fail-closed: false

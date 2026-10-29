@@ -28,6 +28,8 @@ management:
 
 app:
   security:
+    # Shared secret for service-to-service calls (sent to integration-service for email).
+    internal-service-secret: ${INTERNAL_SERVICE_SECRET:fawnix-internal-secret}
     jwt:
       # RS256 public key from identity-service - the same default every other
       # service and the gateway verify with. identity tokens are the only ones
@@ -45,4 +47,7 @@ app:
       enabled: true
       fixed-delay-ms: 60000
   notifications:
-    email-enabled: false
+    # Ticket emails go helpdesk -> integration-service -> notifications-service -> SMTP.
+    # SMTP settings live only in notifications-service.
+    email-enabled: ${HELPDESK_EMAIL_ENABLED:true}
+    integration-url: ${INTEGRATION_SERVICE_URL:http://integration-service}

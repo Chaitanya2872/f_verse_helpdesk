@@ -10,8 +10,9 @@ spring:
 
 app:
   jwt:
-    # Dev-only signing key - never reuse this outside local development.
-    secret: fb0b2daf5df21f25eaad06025f85135ab0a98ee6c0a5242a89f63f0c432820f2
+    # Signing key for this service's own HS256 tokens. No committed default: set JWT_SECRET (32+ random bytes),
+    # e.g. in a git-ignored .env or application-dev-local.yml.
+    secret: ${JWT_SECRET}
   notifications:
     # Off locally unless integration- and notifications-service are running too.
     email-enabled: ${HELPDESK_EMAIL_ENABLED:false}

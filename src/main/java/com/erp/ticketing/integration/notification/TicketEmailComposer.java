@@ -40,8 +40,9 @@ public class TicketEmailComposer {
 
     private static final int SUMMARY_LIMIT = 500;
     private static final int SUBJECT_LIMIT = 250;
-    private static final String RESTRICTED_TITLE = "(restricted ticket)";
-    private static final String RESTRICTED_TEXT = "(not shown for restricted tickets)";
+    /** Shared with the WhatsApp composer so both channels hide restricted ticket text the same way. */
+    public static final String RESTRICTED_TITLE = "(restricted ticket)";
+    public static final String RESTRICTED_TEXT = "(not shown for restricted tickets)";
     private static final String TEMPLATE_PREFIX = "EMAIL_";
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{(\\w+)}}");
     private static final DateTimeFormatter WHEN = DateTimeFormatter.ofPattern("d MMM yyyy, HH:mm 'UTC'", Locale.ENGLISH)
@@ -165,6 +166,8 @@ public class TicketEmailComposer {
             case TICKET_CREATED -> "New ticket " + v.get("ticketNumber");
             case TICKET_ASSIGNED -> "Ticket assigned to you: " + v.get("ticketNumber");
             case TICKET_RESOLVED -> "Ticket resolved: " + v.get("ticketNumber");
+            // Reminders are WhatsApp-only and never composed as email; kept so the switch stays exhaustive.
+            case TICKET_REMINDER -> "Ticket reminder: " + v.get("ticketNumber");
         };
         String subject = truncate(headline + " - " + v.get("title"), SUBJECT_LIMIT);
 

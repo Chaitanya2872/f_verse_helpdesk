@@ -4,6 +4,14 @@ server:
   port: ${SERVER_PORT:8096}
 
 spring:
+  # Local secrets (JWT_SECRET, INTERNAL_SERVICE_SECRET, ...) may live in a git-ignored .env next to the service
+  # or higher up, as in notifications-service. Real environment variables still take precedence.
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
+      - optional:file:../../.env[.properties]
+      - optional:file:../../../.env[.properties]
   application:
     name: helpdesk-service
   profiles:
@@ -29,7 +37,8 @@ management:
 app:
   security:
     # Shared secret for service-to-service calls (sent to integration-service for email).
-    internal-service-secret: ${INTERNAL_SERVICE_SECRET:fawnix-internal-secret}
+    # No committed default: must equal the other services' INTERNAL_SERVICE_SECRET.
+    internal-service-secret: ${INTERNAL_SERVICE_SECRET:}
     jwt:
       # RS256 public key from identity-service - the same default every other
       # service and the gateway verify with. identity tokens are the only ones
@@ -72,3 +81,33 @@ app:
     retry-base-delay: ${NOTIFICATION_SERVICE_RETRY_BASE_DELAY:30s}
     retry-max-delay: ${NOTIFICATION_SERVICE_RETRY_MAX_DELAY:15m}
     poll-interval-ms: ${NOTIFICATION_SERVICE_POLL_INTERVAL_MS:5000}
+  # WhatsApp template notifications (ticket_created / ticket_assigned / ticket_reminder). They use the same
+  # outbox and dispatcher as email, so notification-service.enabled must be on too. Meta credentials are NOT
+  # set here - only in the notification-service (WHATSAPP_ACCESS_TOKEN etc.).
+  whatsapp:
+    enabled: ${HELPDESK_WHATSAPP_ENABLED:${WHATSAPP_ENABLED:false}}
+    language-code: ${WHATSAPP_TEMPLATE_LANGUAGE:en_US}
+    display-time-zone: ${WHATSAPP_DISPLAY_TIME_ZONE:UTC}
+    # Digits, e.g. 91. Applied to stored numbers without a country code; blank = such numbers are rejected.
+    default-country-code: ${WHATSAPP_DEFAULT_COUNTRY_CODE:}
+    ticket-created:
+      name: ${WHATSAPP_TEMPLATE_TICKET_CREATED:ticket_created}
+      # Set only if the APPROVED template has a dynamic URL button (0-based position); its value is the ticket id.
+      url-button-index: ${WHATSAPP_TEMPLATE_TICKET_CREATED_URL_BUTTON_INDEX:}
+    ticket-assigned:
+      name: ${WHATSAPP_TEMPLATE_TICKET_ASSIGNED:ticket_assigned}
+      url-button-index: ${WHATSAPP_TEMPLATE_TICKET_ASSIGNED_URL_BUTTON_INDEX:}
+    ticket-reminder:
+      name: ${WHATSAPP_TEMPLATE_TICKET_REMINDER:ticket_reminder}
+      url-button-index: ${WHATSAPP_TEMPLATE_TICKET_REMINDER_URL_BUTTON_INDEX:}
+    reminders:
+      enabled: ${WHATSAPP_REMINDERS_ENABLED:true}
+      # Optional earlier reminders, as % of the SLA window elapsed. "SLA Due Soon" and "SLA Breached" come from
+      # each ticket's SLA policy (warning %, resolution due) and need no setting here.
+      first-reminder-percent: ${WHATSAPP_FIRST_REMINDER_PERCENT:}
+      second-reminder-percent: ${WHATSAPP_SECOND_REMINDER_PERCENT:}
+    identity:
+      base-url: ${IDENTITY_SERVICE_BASE_URL:http://localhost:8081}
+      internal-secret: ${IDENTITY_SERVICE_INTERNAL_SECRET:${INTERNAL_SERVICE_SECRET:}}
+      connect-timeout: ${IDENTITY_SERVICE_CONNECT_TIMEOUT:3s}
+      read-timeout: ${IDENTITY_SERVICE_READ_TIMEOUT:10s}

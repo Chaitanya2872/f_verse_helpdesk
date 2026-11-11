@@ -4,6 +4,7 @@ import com.erp.ticketing.integration.notification.model.DeliveryAttempt;
 import com.erp.ticketing.integration.notification.model.NotificationOutbox;
 import com.erp.ticketing.integration.notification.repository.DeliveryAttemptRepository;
 import com.erp.ticketing.integration.notification.repository.NotificationOutboxRepository;
+import com.erp.ticketing.integration.notification.whatsapp.WhatsAppDeliveryHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -26,7 +27,11 @@ import static net.logstash.logback.argument.StructuredArguments.kv;
  * the outcome and the attempt in a second short transaction. Because rows only exist once the ticket change
  * has committed, a ticket operation can never be rolled back by - or wait on - a notification problem.
  *
- * <p>Outcomes: accepted rows are marked ACCEPTED; retryable failures are rescheduled with
+ * <p>EMAIL rows go to the notification-service's email endpoint; WHATSAPP rows go through
+ * {@link WhatsAppDeliveryHandler} (eligibility re-check, phone lookup, template send).
+ *
+ * <p>Outcomes: accepted rows are marked ACCEPTED (keeping WhatsApp's message id); rows that no longer apply are
+ * CANCELLED without a send; retryable failures are rescheduled with
  * {@code base * 2^(attempt-1)} (capped, and never sooner than a server's Retry-After); permanent failures
  * and exhausted retries are marked FAILED and stay eligible for {@link #retry(Long)}.
  */
@@ -40,17 +45,20 @@ public class NotificationDispatcher {
     private final NotificationOutboxRepository outbox;
     private final DeliveryAttemptRepository attempts;
     private final NotificationServiceClient client;
+    private final WhatsAppDeliveryHandler whatsApp;
     private final TransactionTemplate tx;
 
     public NotificationDispatcher(NotificationServiceProperties properties,
                                   NotificationOutboxRepository outbox,
                                   DeliveryAttemptRepository attempts,
                                   NotificationServiceClient client,
+                                  WhatsAppDeliveryHandler whatsApp,
                                   PlatformTransactionManager transactionManager) {
         this.properties = properties;
         this.outbox = outbox;
         this.attempts = attempts;
         this.client = client;
+        this.whatsApp = whatsApp;
         this.tx = new TransactionTemplate(transactionManager);
     }
 
@@ -103,15 +111,14 @@ public class NotificationDispatcher {
     }
 
     private DeliveryOutcome send(NotificationOutbox row) {
-        if (row.getChannel() != DeliveryChannel.EMAIL) {
-            // Defensive: nothing produces other channels today (see DeliveryChannel).
-            return DeliveryOutcome.permanent(null, "Channel " + row.getChannel() + " is not supported");
-        }
         try {
-            return client.sendEmail(new NotificationServiceClient.EmailRequest(
-                    properties.getModule(), row.getEventType().name(), List.of(row.getRecipientEmail()),
-                    row.getSubject(), row.getBodyText(), row.getBodyHtml(), row.getIdempotencyKey()),
-                    row.getCorrelationId());
+            return switch (row.getChannel()) {
+                case EMAIL -> client.sendEmail(new NotificationServiceClient.EmailRequest(
+                        properties.getModule(), row.getEventType().name(), List.of(row.getRecipientEmail()),
+                        row.getSubject(), row.getBodyText(), row.getBodyHtml(), row.getIdempotencyKey()),
+                        row.getCorrelationId());
+                case WHATSAPP -> whatsApp.deliver(row);
+            };
         } catch (RuntimeException ex) {
             return DeliveryOutcome.retryable(null, "Unexpected error: " + ex.getClass().getSimpleName(), null);
         }
@@ -137,7 +144,15 @@ public class NotificationDispatcher {
                 row.setStatus(OutboxStatus.ACCEPTED);
                 row.setAcceptedAt(Instant.now());
                 row.setLastError(null);
+                if (outcome.providerMessageId() != null) {
+                    row.setProviderMessageId(outcome.providerMessageId());
+                }
                 attempt.setOutcome("ACCEPTED");
+            }
+            case CANCELLED -> {
+                row.setStatus(OutboxStatus.CANCELLED);
+                row.setLastError(truncate(outcome.detail()));
+                attempt.setOutcome("CANCELLED");
             }
             case PERMANENT -> {
                 row.setStatus(OutboxStatus.FAILED);
@@ -196,6 +211,10 @@ public class NotificationDispatcher {
             row.setAttempts(0);
             row.setNextAttemptAt(Instant.now());
             row.setLeaseUntil(null);
+            if (row.getChannel() == DeliveryChannel.WHATSAPP) {
+                // Look the number up again: a missing or wrong number is the usual reason a retry is wanted.
+                row.setRecipientPhone(null);
+            }
             outbox.save(row);
             return true;
         }));

@@ -56,6 +56,26 @@ public class NotificationOutbox extends BaseEntity {
     @Column(name = "body_text")
     private String bodyText;
 
+    /** WHATSAPP only: the approved Meta template, e.g. {@code ticket_created}. */
+    @Column(name = "template_name", updatable = false)
+    private String templateName;
+
+    /** WHATSAPP only: the template's language, e.g. {@code en_US}. */
+    @Column(name = "template_language", updatable = false)
+    private String templateLanguage;
+
+    /** WHATSAPP only: JSON of the body variables (in order) and URL-button suffixes, fixed when recorded. */
+    @Column(name = "template_params", updatable = false)
+    private String templateParams;
+
+    /** WHATSAPP only: the number the message went to, in international digits, resolved at dispatch time. */
+    @Column(name = "recipient_phone")
+    private String recipientPhone;
+
+    /** WHATSAPP only: Meta's message id once accepted. Acceptance is not a delivery receipt. */
+    @Column(name = "provider_message_id")
+    private String providerMessageId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false)
     private OutboxStatus status = OutboxStatus.PENDING;

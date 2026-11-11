@@ -8,8 +8,8 @@
 spring:
   datasource:
     url: jdbc:postgresql://localhost:5432/ticketing_test
-    username: postgres
-    password: praveen123
+    username: ${HELPDESK_TEST_DB_USERNAME:postgres}
+    password: ${HELPDESK_TEST_DB_PASSWORD:postgres}
   flyway:
     enabled: true
   jpa:

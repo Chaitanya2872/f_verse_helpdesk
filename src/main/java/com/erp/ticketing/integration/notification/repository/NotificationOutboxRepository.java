@@ -38,6 +38,32 @@ public interface NotificationOutboxRepository extends JpaRepository<Notification
                        @Param("email") String email, @Param("subject") String subject, @Param("html") String html,
                        @Param("text") String text, @Param("correlationId") String correlationId);
 
+    boolean existsByIdempotencyKey(String idempotencyKey);
+
+    /**
+     * The WhatsApp counterpart of {@link #insertIfAbsent}: a template name and its variables instead of a
+     * subject and body. Same guarantees - a repeat is a no-op and cannot poison the surrounding transaction,
+     * and concurrent writers of the same key (two reminder-job instances, say) produce exactly one row.
+     *
+     * @return 1 if a row was written, 0 if it was a duplicate
+     */
+    @Modifying
+    @Query(value = "INSERT INTO notification_outbox (idempotency_key, event_type, channel, ticket_id, recipient_user_id, "
+            + "recipient_name, template_name, template_language, template_params, status, attempts, next_attempt_at, "
+            + "correlation_id, created_at, updated_at, version) "
+            + "VALUES (:key, :eventType, 'WHATSAPP', :ticketId, :userId, :name, :templateName, :language, :params, "
+            + "'PENDING', 0, now(), :correlationId, now(), now(), 0) "
+            + "ON CONFLICT (idempotency_key) DO NOTHING", nativeQuery = true)
+    int insertWhatsAppIfAbsent(@Param("key") String key, @Param("eventType") String eventType,
+                               @Param("ticketId") Long ticketId, @Param("userId") Long userId,
+                               @Param("name") String name, @Param("templateName") String templateName,
+                               @Param("language") String language, @Param("params") String params,
+                               @Param("correlationId") String correlationId);
+
+    @Modifying
+    @Query("update NotificationOutbox o set o.recipientPhone = :phone where o.id = :id")
+    int setRecipientPhone(@Param("id") Long id, @Param("phone") String phone);
+
     /** Rows that are due, locked so concurrent dispatcher instances never pick the same one. */
     @Query(value = "SELECT id FROM notification_outbox WHERE status = 'PENDING' AND next_attempt_at <= :now "
             + "AND (lease_until IS NULL OR lease_until < :now) ORDER BY id LIMIT :limit FOR UPDATE SKIP LOCKED",

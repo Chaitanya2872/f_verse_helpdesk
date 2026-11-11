@@ -11,7 +11,7 @@ onboarding, approval and interview mail is unaffected.
 | Channel  | Status |
 |----------|--------|
 | Email    | **Implemented** against the notification-service's existing `POST /internal/notifications/email`. |
-| WhatsApp | **Not implemented, blocked.** See "Open items". `DeliveryChannel.WHATSAPP` exists as an extension point; no WhatsApp message is ever produced. |
+| WhatsApp | **Implemented** for the approved Meta templates `ticket_created`, `ticket_assigned`, `ticket_reminder`, through the notification-service's `POST /internal/notifications/whatsapp/template`. Off by default. See "WhatsApp template notifications". |
 
 ## Notification-service contract (read from its source)
 
@@ -150,6 +150,7 @@ Responses show delivery state only, never the notification-service's raw respons
 
 `V22`: `ticket_notification_recipients`, `notification_outbox`, `notification_delivery_attempts`.
 `V23__email_templates.sql`: the three `EMAIL_TICKET_*` template rows.
+`V24__whatsapp_notifications.sql`: WhatsApp columns on `notification_outbox`, and the `CANCELLED` status.
 
 ## Build, run, test
 
@@ -167,21 +168,115 @@ HELPDESK_APP_BASE_URL=https://helpdesk.example.com \
 mvn spring-boot:run
 ```
 
-Tests mock the notification-service; no real email is ever sent.
+Tests mock the notification-service; no real email is ever sent. WhatsApp: `WhatsAppNotificationIT` (database),
+`WhatsAppTemplateComposerTest`, `ReminderPolicyTest`, `PhoneNumbersTest`, `IdentityPhoneDirectoryTest` here, and
+`WhatsAppCloudClientTest` / `WhatsAppTemplateServiceTest` in the notification-service (Meta mocked) - no WhatsApp
+message is ever sent.
+
+## WhatsApp template notifications
+
+Same outbox, same dispatcher, same retry/backoff, same admin API as email. A WhatsApp row (`channel = WHATSAPP`)
+stores a Meta template name, its language and its variables (JSON) instead of a subject and body.
+
+```
+ticket change ──► TicketNotificationEvent ──► WhatsAppNotificationRecorder (same transaction)
+SLA interval  ──► WhatsAppReminderJob (reads tickets, never saves them)
+                        │  INSERT ... ON CONFLICT DO NOTHING into notification_outbox (channel WHATSAPP)
+                        ▼
+NotificationDispatcher ──► WhatsAppDeliveryHandler
+                             1. still applies? (else CANCELLED)  2. phone from identity-service  3. send
+                        ──► notification-service POST /internal/notifications/whatsapp/template
+                        ──► Meta Cloud API POST /{version}/{phone-number-id}/messages
+```
+
+| Template | Raised when | Recipient | Variables, in order |
+|---|---|---|---|
+| `ticket_created` | ticket created | requester | requester name, ticket no., subject, priority, created |
+| `ticket_assigned` | handler changed through the ticket API; or ticket created with a handler already set by routing/automation | new handler | handler name, ticket no., subject, description, priority, assigned by (`Auto-assignment` for routing/automation), resolution due |
+| `ticket_reminder` | `WhatsAppReminderJob`, see below | current handler | handler name, ticket no., subject, status, priority, resolution due, reminder type |
+
+Priority is shown as the web app labels it (P1 Critical, P2 High, P3 Medium, P4 Low). Dates use
+`app.whatsapp.display-time-zone` ("11 Nov 2026, 11:30 AM"; " UTC" is appended when the zone is UTC). Values are made
+one-line and never empty (Meta rejects both). Restricted/confidential tickets never carry their title or description.
+Headers are static template text, so no header parameters are sent. A URL button is only sent when
+`url-button-index` is configured for that template (its value is the ticket id) - check the approved template in
+Business Manager first; nothing is assumed.
+
+**Reminders.** Every SLA monitoring interval, for each ticket that has an active assignee, a resolution due date, a
+status other than RESOLVED/CLOSED/CANCELLED and a running (not paused) SLA clock, the highest stage reached is queued:
+`SLA Breached` (past resolution due) > `SLA Due Soon` (past the ticket's SLA policy `warning_percent`, the same rule
+as the in-app SLA warning) > `Second Reminder` / `First Reminder` (optional `%` of the SLA window, unset = never
+sent). Key: `TICKET_REMINDER:{ticket}:{reopenCount}:{type}:{assignee}:WHATSAPP`, so each stage is sent at most once
+per assignee and resolution round - whatever the number of scans or application instances (the unique key plus
+ON CONFLICT DO NOTHING makes a concurrent duplicate a no-op, and the dispatcher's SKIP LOCKED lease makes the send
+single). A new assignee gets their own reminders.
+
+**Before each send** an assignment or reminder is re-checked and marked `CANCELLED` (not sent, not retried) when the
+ticket is now RESOLVED/CLOSED/CANCELLED, has another handler, or (reminders) its SLA is paused. Switching WhatsApp off
+cancels whatever is still queued.
+
+**Phone numbers** come from identity-service (`GET /internal/users/profile/{erpUserId}`, which now also returns
+`phoneNumber`), looked up at the first send attempt and normalised to international digits: `+`/`00` prefixes and
+separators are stripped; a number without a country code is only accepted when `WHATSAPP_DEFAULT_COUNTRY_CODE` is set.
+No number, or an invalid one, is a permanent failure shown in the admin outbox; identity-service being down is
+retried. The admin retry looks the number up again.
+
+**Outcomes.** `ACCEPTED` = Meta accepted the message and returned its id (stored as `provider_message_id`). This is
+**not** a delivery confirmation: no WhatsApp status webhook is consumed anywhere in this codebase, so there is no
+`DELIVERED` state rather than an invented one. The notification-service answers 422 for anything that can never
+succeed (unknown template, parameter mismatch, undeliverable number, rejected token: not retried) and 502/503 for
+transient failures (rate limits, Meta 5xx, timeouts, channel not configured: retried with backoff up to
+`NOTIFICATION_SERVICE_MAX_ATTEMPTS`). Meta has no idempotency key for messages; the notification-service suppresses a
+repeated key for 10 minutes in memory, so a lost response followed by a retry can, rarely, deliver twice.
+
+**Configuration**
+
+Helpdesk (`app.whatsapp.*`; also requires `NOTIFICATION_SERVICE_ENABLED=true`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `HELPDESK_WHATSAPP_ENABLED` (falls back to `WHATSAPP_ENABLED`) | `false` | Master switch for recording and sending |
+| `WHATSAPP_TEMPLATE_LANGUAGE` | `en_US` | Language the templates were approved in |
+| `WHATSAPP_TEMPLATE_TICKET_CREATED` / `_ASSIGNED` / `_REMINDER` | `ticket_created` / `ticket_assigned` / `ticket_reminder` | Template names |
+| `WHATSAPP_TEMPLATE_TICKET_*_URL_BUTTON_INDEX` | *(unset)* | Only if the approved template has a dynamic URL button |
+| `WHATSAPP_DISPLAY_TIME_ZONE` | `UTC` | e.g. `Asia/Kolkata` |
+| `WHATSAPP_DEFAULT_COUNTRY_CODE` | *(blank)* | e.g. `91`; blank rejects numbers without a country code |
+| `WHATSAPP_REMINDERS_ENABLED` | `true` | Reminder job switch |
+| `WHATSAPP_FIRST_REMINDER_PERCENT` / `WHATSAPP_SECOND_REMINDER_PERCENT` | *(unset)* | Optional early reminders |
+| `IDENTITY_SERVICE_BASE_URL` | `http://localhost:8081` | Phone lookup |
+| `IDENTITY_SERVICE_INTERNAL_SECRET` (falls back to `INTERNAL_SERVICE_SECRET`) | *(blank)* | identity-service's internal secret |
+
+Notification-service (`notifications.whatsapp.*`) - the only place Meta credentials exist:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WHATSAPP_ENABLED` | `false` | Channel switch |
+| `WHATSAPP_ACCESS_TOKEN` | *(blank)* | System-user token. Secret - environment only |
+| `WHATSAPP_PHONE_NUMBER_ID` | *(blank)* | Sending number's id |
+| `WHATSAPP_API_VERSION` | *(blank)* | e.g. `v21.0`; required, never guessed |
+| `WHATSAPP_GRAPH_BASE_URL` | `https://graph.facebook.com` | |
+| `WHATSAPP_CONNECT_TIMEOUT` / `WHATSAPP_READ_TIMEOUT` | `5s` / `15s` | |
+
+`V24__whatsapp_notifications.sql` adds `template_name`, `template_language`, `template_params`, `recipient_phone`,
+`provider_message_id` to `notification_outbox` and the `CANCELLED` status. The admin outbox list
+(`?status=CANCELLED` is accepted too) shows `templateName`, `providerMessageId` and the number masked to its last four
+digits.
 
 ## Open items for the notification-service owner
 
-1. **WhatsApp.** The notification-service has no WhatsApp channel at all (its channels are `IN_APP`, `EMAIL`,
-   `WEB_PUSH`). Needed from them: the endpoint and request shape, how recipients are addressed, whether delivery is
-   template-only (WhatsApp business policy) and the approved template names and variables.
-2. **Phone numbers.** Helpdesk users have an email but no phone number. The WhatsApp work also needs a source for it
-   (identity-service profile, or a new helpdesk field) plus the normalisation rules (E.164).
+1. **WhatsApp delivery receipts.** Meta reports sent/delivered/read/failed through a webhook. The gateway already
+   whitelists `/api/integrations/whatsapp/webhook` for crm-service, which is not in this repository; nothing here
+   consumes WhatsApp statuses, so rows stop at `ACCEPTED`. `provider_message_id` is stored so a webhook consumer can
+   later move a row to delivered/failed.
+2. **Automation-driven reassignment.** An automation rule that changes the handler on a status change raises no
+   event (same as for email), so no `ticket_assigned` is sent for it. Routing/automation at creation is covered.
 3. **Where templates live.** They are now in the helpdesk (see "Email templates"). If you would rather the
    notification-service own the wording, it would need matching templates; `TicketEmailComposer` is the one place to
    switch to a `templateKey` plus variables.
 4. **Distinguishing validation from provider errors.** `/internal/notifications/email` returns 502 for both; a distinct
-   status (e.g. 400/422) for validation would let the helpdesk stop retrying a bad request immediately.
-5. **Delivery receipts.** There is no callback or status lookup, so "accepted" cannot be upgraded to "delivered".
+   status (e.g. 400/422) for validation would let the helpdesk stop retrying a bad request immediately. (The new
+   WhatsApp endpoint already does this: 422 vs 502.)
+5. **Email delivery receipts.** There is no callback or status lookup, so "accepted" cannot be upgraded to "delivered".
 6. **Secret in their config.** `f_verse_notifications/src/main/resources/application.yml` has a real-looking SMTP
    password as a default (`SMTP_PASSWORD`) and a default internal secret. Both should come only from the environment
    and the committed password should be rotated. This service was not modified.

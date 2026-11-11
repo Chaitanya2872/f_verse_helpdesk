@@ -38,8 +38,9 @@ public class SlaMonitoringJob {
 
     private static final Logger log = LoggerFactory.getLogger(SlaMonitoringJob.class);
 
-    private static final Set<TicketStatus> TERMINAL_STATUSES =
-            EnumSet.of(TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED);
+    /** Statuses in which a ticket's SLA no longer runs; shared with the WhatsApp reminder job. */
+    public static final Set<TicketStatus> TERMINAL_STATUSES =
+            java.util.Collections.unmodifiableSet(EnumSet.of(TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED));
 
     private final TicketRepository ticketRepository;
     private final ActivityLogService activityLogService;
@@ -128,17 +129,25 @@ public class SlaMonitoringJob {
         activityLogService.logFieldChanged(ticket, null, "escalation", null, "Escalated to " + manager.getName());
     }
 
-    private boolean isAtRisk(Ticket ticket, Instant now, SlaPolicy policy) {
+    /**
+     * The policy's warning threshold (80% without a policy) of the SLA window has elapsed. Public and static so the
+     * WhatsApp "SLA Due Soon" reminder applies exactly the same rule rather than a copy of it.
+     */
+    public static boolean isAtRisk(Ticket ticket, Instant now, SlaPolicy policy) {
         double warningRatio = (policy != null ? policy.getWarningPercent() : 80) / 100.0;
+        return elapsedFraction(ticket, now) >= warningRatio;
+    }
+
+    /** Share of the window from creation to resolution due that has elapsed; 1.0 or more once due. */
+    public static double elapsedFraction(Ticket ticket, Instant now) {
         Instant createdAt = ticket.getCreatedAt();
         Instant resolutionDue = ticket.getResolutionDue();
         long totalMinutes = Duration.between(createdAt, resolutionDue).toMinutes();
         if (totalMinutes <= 0) {
-            return true;
+            return Double.POSITIVE_INFINITY;
         }
         long elapsedMinutes = Duration.between(createdAt, now).toMinutes();
-        double ratio = (double) elapsedMinutes / totalMinutes;
-        return ratio >= warningRatio;
+        return (double) elapsedMinutes / totalMinutes;
     }
 
     private void notifyAssigneeOrDepartmentLeads(Ticket ticket, String eventType) {

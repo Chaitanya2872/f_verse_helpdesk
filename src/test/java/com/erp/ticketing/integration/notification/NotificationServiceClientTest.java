@@ -152,6 +152,66 @@ class NotificationServiceClientTest {
         assertThat(client.sendEmail(request(), null).kind()).isEqualTo(DeliveryOutcome.Kind.RETRYABLE);
     }
 
+    // ------------------------------------------------------------------ WhatsApp template endpoint
+
+    private static final String WHATSAPP_URL = "http://notifications.test/internal/notifications/whatsapp/template";
+
+    private static NotificationServiceClient.WhatsAppTemplateRequest whatsApp() {
+        return new NotificationServiceClient.WhatsAppTemplateRequest("helpdesk", "TICKET_ASSIGNED", "919876543210",
+                "ticket_assigned", "en_US", List.of("Rahul Sharma", "TKT-2026-00125", "Unable to Access ERP Portal",
+                "User is unable to log in to the ERP portal.", "High", "IT Helpdesk Admin", "12 Nov 2026, 5:00 PM"),
+                List.of(new com.erp.ticketing.integration.notification.whatsapp.WhatsAppTemplateComposer.UrlButton(0, "125")),
+                "TICKET_ASSIGNED:125:2:1:2:WHATSAPP");
+    }
+
+    @Test
+    void whatsAppSendsTheTemplateContractAndKeepsMetasMessageId() {
+        server.expect(requestTo(WHATSAPP_URL))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("X-Internal-Service-Secret", "s3cret-value"))
+                .andExpect(jsonPath("$.module").value("helpdesk"))
+                .andExpect(jsonPath("$.to").value("919876543210"))
+                .andExpect(jsonPath("$.templateName").value("ticket_assigned"))
+                .andExpect(jsonPath("$.languageCode").value("en_US"))
+                .andExpect(jsonPath("$.bodyParameters.length()").value(7))
+                .andExpect(jsonPath("$.bodyParameters[0]").value("Rahul Sharma"))
+                .andExpect(jsonPath("$.bodyParameters[6]").value("12 Nov 2026, 5:00 PM"))
+                .andExpect(jsonPath("$.buttons[0].index").value(0))
+                .andExpect(jsonPath("$.buttons[0].text").value("125"))
+                .andExpect(jsonPath("$.idempotencyKey").value("TICKET_ASSIGNED:125:2:1:2:WHATSAPP"))
+                .andRespond(withSuccess("{\"sent\":true,\"status\":\"SENT\",\"messageId\":\"wamid.ABC\"}",
+                        MediaType.APPLICATION_JSON));
+
+        DeliveryOutcome outcome = client.sendWhatsAppTemplate(whatsApp(), "corr-9");
+
+        assertThat(outcome.kind()).isEqualTo(DeliveryOutcome.Kind.ACCEPTED);
+        assertThat(outcome.providerMessageId()).isEqualTo("wamid.ABC");
+        server.verify();
+    }
+
+    @Test
+    void whatsAppPermanentFailuresAre422AndNotRetried() {
+        server.expect(requestTo(WHATSAPP_URL)).andRespond(withStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"sent\":false,\"status\":\"FAILED\",\"retryable\":false,\"providerErrorCode\":132001,"
+                        + "\"error\":\"WhatsApp Cloud API HTTP 404, error 132001: Template name does not exist\"}"));
+
+        DeliveryOutcome outcome = client.sendWhatsAppTemplate(whatsApp(), null);
+
+        assertThat(outcome.kind()).isEqualTo(DeliveryOutcome.Kind.PERMANENT);
+        assertThat(outcome.detail()).contains("132001");
+    }
+
+    @Test
+    void whatsAppTransientFailuresAndAnUnconfiguredChannelAreRetryable() {
+        server.expect(requestTo(WHATSAPP_URL)).andRespond(withStatus(HttpStatus.BAD_GATEWAY)
+                .contentType(MediaType.APPLICATION_JSON).body("{\"sent\":false,\"retryable\":true,\"error\":\"rate limit\"}"));
+        server.expect(requestTo(WHATSAPP_URL)).andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE));
+
+        assertThat(client.sendWhatsAppTemplate(whatsApp(), null).kind()).isEqualTo(DeliveryOutcome.Kind.RETRYABLE);
+        assertThat(client.sendWhatsAppTemplate(whatsApp(), null).kind()).isEqualTo(DeliveryOutcome.Kind.RETRYABLE);
+    }
+
     @Test
     void anUnparseableSuccessBodyIsStillAccepted() {
         server.expect(requestTo(URL)).andExpect(content().string(org.hamcrest.Matchers.containsString("TICKET_CREATED")))

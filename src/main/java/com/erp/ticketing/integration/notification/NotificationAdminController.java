@@ -10,6 +10,7 @@ import com.erp.ticketing.integration.notification.model.TicketNotificationRecipi
 import com.erp.ticketing.integration.notification.repository.DeliveryAttemptRepository;
 import com.erp.ticketing.integration.notification.repository.NotificationOutboxRepository;
 import com.erp.ticketing.integration.notification.repository.TicketNotificationRecipientRepository;
+import com.erp.ticketing.integration.notification.whatsapp.PhoneNumbers;
 import com.erp.ticketing.user.model.User;
 import com.erp.ticketing.user.service.UserService;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -44,9 +45,14 @@ public class NotificationAdminController {
                                     String departmentName, boolean active) {
     }
 
+    /**
+     * {@code templateName}, {@code recipientPhone} (masked to its last four digits) and {@code providerMessageId}
+     * are set for WhatsApp rows only. {@code acceptedAt} is when the provider accepted it - not a delivery receipt.
+     */
     public record OutboxResponse(Long id, String eventType, String channel, Long ticketId, Long recipientUserId,
                                  String status, int attempts, Instant nextAttemptAt, String lastError,
-                                 Instant createdAt, Instant acceptedAt) {
+                                 Instant createdAt, Instant acceptedAt, String templateName, String recipientPhone,
+                                 String providerMessageId) {
     }
 
     public record AttemptResponse(int attemptNo, String outcome, Integer httpStatus, String detail, Instant attemptedAt) {
@@ -91,7 +97,7 @@ public class NotificationAdminController {
         } catch (IllegalArgumentException ex) {
             throw new BadRequestException("Invalid eventType: " + request.eventType());
         }
-        if (type == NotificationEventType.TICKET_ASSIGNED) {
+        if (type != NotificationEventType.TICKET_CREATED && type != NotificationEventType.TICKET_RESOLVED) {
             throw new BadRequestException("The handler is notified automatically; only TICKET_CREATED and "
                     + "TICKET_RESOLVED have configurable recipients");
         }
@@ -163,7 +169,8 @@ public class NotificationAdminController {
     private static OutboxResponse toResponse(NotificationOutbox o) {
         return new OutboxResponse(o.getId(), o.getEventType().name(), o.getChannel().name(), o.getTicketId(),
                 o.getRecipientUserId(), o.getStatus().name(), o.getAttempts(), o.getNextAttemptAt(), o.getLastError(),
-                o.getCreatedAt(), o.getAcceptedAt());
+                o.getCreatedAt(), o.getAcceptedAt(), o.getTemplateName(),
+                o.getRecipientPhone() == null ? null : PhoneNumbers.mask(o.getRecipientPhone()), o.getProviderMessageId());
     }
 
     private static AttemptResponse toResponse(DeliveryAttempt a) {

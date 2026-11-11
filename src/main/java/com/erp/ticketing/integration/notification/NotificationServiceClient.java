@@ -1,5 +1,6 @@
 package com.erp.ticketing.integration.notification;
 
+import com.erp.ticketing.integration.notification.whatsapp.WhatsAppTemplateComposer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -38,6 +39,7 @@ public class NotificationServiceClient {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationServiceClient.class);
     private static final String EMAIL_PATH = "/internal/notifications/email";
+    private static final String WHATSAPP_PATH = "/internal/notifications/whatsapp/template";
     private static final String SECRET_HEADER = "X-Internal-Service-Secret";
     private static final String CORRELATION_HEADER = "X-Correlation-Id";
     private static final int DETAIL_LIMIT = 300;
@@ -45,6 +47,15 @@ public class NotificationServiceClient {
     /** The fields of the notification-service's SendEmailRequest that this integration uses. */
     public record EmailRequest(String module, String eventType, List<String> to, String subject,
                                String bodyText, String bodyHtml, String idempotencyKey) {
+    }
+
+    /**
+     * The notification-service's SendWhatsAppTemplateRequest. {@code to} is international digits; body parameters
+     * are positional ({@code bodyParameters[0]} fills {@code {{1}}}).
+     */
+    public record WhatsAppTemplateRequest(String module, String eventType, String to, String templateName,
+                                          String languageCode, List<String> bodyParameters,
+                                          List<WhatsAppTemplateComposer.UrlButton> buttons, String idempotencyKey) {
     }
 
     private record RawResponse(int status, String retryAfter, String body) {
@@ -73,10 +84,23 @@ public class NotificationServiceClient {
     }
 
     public DeliveryOutcome sendEmail(EmailRequest request, String correlationId) {
+        return post(EMAIL_PATH, request, request.eventType(), correlationId);
+    }
+
+    /**
+     * {@code POST /internal/notifications/whatsapp/template}: the notification-service makes the Meta Cloud API
+     * call. Accepted answers carry Meta's message id. Its 422 (the request can never succeed - unknown template,
+     * undeliverable number, invalid parameters) is permanent; 502/503 are retryable.
+     */
+    public DeliveryOutcome sendWhatsAppTemplate(WhatsAppTemplateRequest request, String correlationId) {
+        return post(WHATSAPP_PATH, request, request.eventType(), correlationId);
+    }
+
+    private DeliveryOutcome post(String path, Object request, String eventType, String correlationId) {
         RawResponse response;
         try {
             response = restClient.post()
-                    .uri(EMAIL_PATH)
+                    .uri(path)
                     .header(SECRET_HEADER, properties.getInternalSecret())
                     .headers(h -> {
                         if (correlationId != null && !correlationId.isBlank()) {
@@ -91,11 +115,11 @@ public class NotificationServiceClient {
                             new String(res.getBody().readAllBytes(), StandardCharsets.UTF_8)));
         } catch (RestClientException ex) {
             // Timeouts, refused connections and unreadable responses: the request may or may not have arrived.
-            log.warn("Notification-service unreachable", kv("eventType", request.eventType()),
+            log.warn("Notification-service unreachable", kv("eventType", eventType),
                     kv("error", ex.getClass().getSimpleName()));
             return DeliveryOutcome.retryable(null, "No response: " + ex.getClass().getSimpleName(), null);
         }
-        return classify(response, request.eventType());
+        return classify(response, eventType);
     }
 
     private DeliveryOutcome classify(RawResponse response, String eventType) {
@@ -106,7 +130,9 @@ public class NotificationServiceClient {
         if (status >= 200 && status < 300) {
             boolean sent = body == null || !body.has("sent") || body.get("sent").asBoolean();
             if (sent) {
-                return DeliveryOutcome.accepted(status, body != null && body.hasNonNull("status") ? body.get("status").asText() : "OK");
+                String messageId = body != null && body.hasNonNull("messageId") ? body.get("messageId").asText() : null;
+                return DeliveryOutcome.accepted(status,
+                        body != null && body.hasNonNull("status") ? body.get("status").asText() : "OK", messageId);
             }
             return DeliveryOutcome.retryable(status, reported != null ? reported : "Reported not sent", null);
         }

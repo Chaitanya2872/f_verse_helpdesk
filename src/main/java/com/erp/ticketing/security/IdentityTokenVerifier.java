@@ -35,18 +35,30 @@ public class IdentityTokenVerifier {
 
     /** The token's claims if identity-service signed it and it has not expired; empty otherwise. */
     public Optional<Claims> verify(String token) {
+        return Optional.ofNullable(verifyToken(token).claims());
+    }
+
+    /**
+     * Verifies the token and, when it is refused, says why. Exactly one of {@code claims} and
+     * {@code reason} is non-null.
+     */
+    public Verification verifyToken(String token) {
         if (publicKey == null) {
-            return Optional.empty();
+            // Only reachable where the startup check is off (dev/test): nothing can verify here.
+            return new Verification(null, TokenRejectionReason.BAD_SIGNATURE);
         }
         try {
-            return Optional.of(Jwts.parser()
+            return new Verification(Jwts.parser()
                     .verifyWith(publicKey)
                     .build()
                     .parseSignedClaims(token)
-                    .getPayload());
+                    .getPayload(), null);
         } catch (JwtException | IllegalArgumentException ex) {
-            return Optional.empty();
+            return new Verification(null, TokenRejectionReason.fromParseFailure(ex));
         }
+    }
+
+    public record Verification(Claims claims, TokenRejectionReason reason) {
     }
 
     /** identity-service's expanded permission keys (implications already applied). */

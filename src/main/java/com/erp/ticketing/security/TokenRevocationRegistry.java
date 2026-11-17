@@ -60,15 +60,27 @@ public class TokenRevocationRegistry {
   private volatile Map<String, Instant> revokedAtByUser = Map.of();
   private volatile Set<String> revokedSessions = Set.of();
 
+  /** Outcome of checking one token against the revocation list. */
+  public enum Status {
+    NOT_REVOKED,
+    REVOKED,
+    /** The list has not loaded yet and the registry fails closed. */
+    NOT_LOADED
+  }
+
   public TokenRevocationRegistry(
-      @Value("${IDENTITY_SERVICE_URL:http://localhost:8081}") String identityServiceUrl,
+      // No localhost default outside the dev profile: production must set IDENTITY_SERVICE_URL
+      // (RequiredSecurityConfigValidator refuses to start without it).
+      @Value("${app.security.revocation.identity-url:}") String identityServiceUrl,
       @Value("${app.security.internal-service-secret:${INTERNAL_SERVICE_SECRET:}}") String internalServiceSecret,
       @Value("${app.security.revocation.poll-interval-ms:15000}") long pollIntervalMs,
       @Value("${app.security.revocation.fail-closed:true}") boolean failClosed
   ) {
-    String base = identityServiceUrl.endsWith("/")
-        ? identityServiceUrl.substring(0, identityServiceUrl.length() - 1) : identityServiceUrl;
-    this.feedUri = URI.create(base + "/internal/auth/token-revocations");
+    String base = identityServiceUrl == null ? "" : identityServiceUrl.trim();
+    if (base.endsWith("/")) {
+      base = base.substring(0, base.length() - 1);
+    }
+    this.feedUri = base.isEmpty() ? null : URI.create(base + "/internal/auth/token-revocations");
     this.internalServiceSecret = internalServiceSecret == null ? "" : internalServiceSecret.trim();
     this.pollIntervalMs = pollIntervalMs;
     this.failClosed = failClosed;
@@ -76,9 +88,14 @@ public class TokenRevocationRegistry {
 
   @PostConstruct
   void start() {
+    String consequence = failClosed
+        ? "; user tokens are refused" : "; revoked tokens stay usable until they expire";
+    if (feedUri == null) {
+      LOGGER.warn("IDENTITY_SERVICE_URL is not set: token revocations cannot be read{}", consequence);
+      return;
+    }
     if (internalServiceSecret.isEmpty()) {
-      LOGGER.warn("INTERNAL_SERVICE_SECRET is not set: token revocations cannot be read{}",
-          failClosed ? "; user tokens are refused" : "; revoked tokens stay usable until they expire");
+      LOGGER.warn("INTERNAL_SERVICE_SECRET is not set: token revocations cannot be read{}", consequence);
       return;
     }
     scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -102,18 +119,34 @@ public class TokenRevocationRegistry {
    * tokens (no user, no session) are never matched.
    */
   public boolean isRevoked(String userId, Instant issuedAt, String sessionId) {
+    return check(userId, issuedAt, sessionId) != Status.NOT_REVOKED;
+  }
+
+  /** Same decision as {@link #isRevoked}, but tells a revocation apart from a list not yet loaded. */
+  public Status check(String userId, Instant issuedAt, String sessionId) {
     if (!loaded) {
-      return failClosed;
+      return failClosed ? Status.NOT_LOADED : Status.NOT_REVOKED;
     }
     if (sessionId != null && revokedSessions.contains(sessionId)) {
-      return true;
+      return Status.REVOKED;
     }
     Instant revokedAt = userId == null ? null : revokedAtByUser.get(userId);
     if (revokedAt == null) {
-      return false;
+      return Status.NOT_REVOKED;
     }
     // iat has second precision; a token from the same second as the revocation is refused too.
-    return issuedAt == null || !issuedAt.isAfter(revokedAt.truncatedTo(ChronoUnit.SECONDS));
+    return issuedAt == null || !issuedAt.isAfter(revokedAt.truncatedTo(ChronoUnit.SECONDS))
+        ? Status.REVOKED : Status.NOT_REVOKED;
+  }
+
+  /** True once a poll of identity's revocation feed has succeeded. */
+  public boolean isLoaded() {
+    return loaded;
+  }
+
+  /** True when user tokens are refused until the list loads (the production setting). */
+  public boolean isFailClosed() {
+    return failClosed;
   }
 
   private void pollAndReschedule() {
@@ -134,22 +167,34 @@ public class TokenRevocationRegistry {
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-      if (response.statusCode() != 200) {
-        LOGGER.warn("Token revocation poll answered {}; keeping the last known set", response.statusCode());
+      int status = response.statusCode();
+      if (status != 200) {
+        String hint = status == 401 || status == 403
+            ? " (INTERNAL_SERVICE_SECRET does not match identity-service's)" : "";
+        LOGGER.warn("Token revocation poll of {} answered HTTP {}{}; {}", feedUri, status, hint, keptState());
         return;
       }
       RevocationFeed feed = objectMapper.readValue(response.body(), RevocationFeed.class);
       if (feed == null || feed.revocations() == null) {
-        LOGGER.warn("Token revocation poll returned nothing; keeping the last known set");
+        LOGGER.warn("Token revocation poll of {} returned no revocation list; {}", feedUri, keptState());
         return;
       }
       replace(feed.revocations(), feed.revokedSessions());
     } catch (InterruptedException exception) {
       Thread.currentThread().interrupt();
     } catch (Exception exception) {
-      LOGGER.warn("Token revocation poll failed ({}); keeping the last known set",
-          exception.getClass().getSimpleName());
+      // The exception message describes the connection/parse failure; the request's secret header
+      // is never part of it, and the secret itself is never logged.
+      LOGGER.warn("Token revocation poll of {} failed: {}: {}; {}", feedUri,
+          exception.getClass().getSimpleName(), exception.getMessage(), keptState());
     }
+  }
+
+  private String keptState() {
+    if (loaded) {
+      return "keeping the last known set";
+    }
+    return failClosed ? "revocations not loaded, user tokens are refused" : "revocations not loaded";
   }
 
   void replace(List<Revocation> revocations, List<String> sessions) {

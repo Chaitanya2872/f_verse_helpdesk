@@ -25,3 +25,9 @@ logging:
 # accepts identity tokens alone. Revocations are not polled outside a running identity-service.
 app.jwt.local-tokens-enabled: true
 app.security.revocation.fail-closed: false
+
+# Local-only defaults. These used to sit in application.yml, where production silently inherited
+# them; they belong to the dev profile alone. The public key is identity-service's DEV key pair.
+app.security.startup-check.enabled: false
+app.security.revocation.identity-url: ${IDENTITY_SERVICE_URL:http://localhost:8081}
+app.security.jwt.public-key: ${JWT_PUBLIC_KEY:MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz4woDjpjkAC+DcXp1cEWG0xuQ/EdwhfzVpw4NEFR0AkfUosjwvJkv2XsBR8HQEhZQ4DIIX1xS/+iYVLIyXfzP9jh19aFScbpQYSKmEc7cBAk817DQ4x8amWBC5DAVuxa/2LC81g6ypYPLNkC+uVX3LGFeswsLsapEw3RrFlSlOCO2R7PWMmwNmwSisxQfjZc7Hku7Idkty3Qvct0yJ63lSaI+5s1WXMZxVQiK4ygoekpy/MMo+fukn7j1XcdW7P6q6BlxbjJybeNRtQLaezcTyRTlRpwmO3U3kKC1lnBH3yt83YwzrDtoW6180us93+J15df3podnoIbPJHfWueuwQIDAQAB}

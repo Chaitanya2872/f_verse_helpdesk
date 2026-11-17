@@ -43,3 +43,5 @@ eureka:
 # accepts identity tokens alone. Revocations are not polled outside a running identity-service.
 app.jwt.local-tokens-enabled: true
 app.security.revocation.fail-closed: false
+# Tests mint local tokens and run without identity-service, so the production startup check is off.
+app.security.startup-check.enabled: false

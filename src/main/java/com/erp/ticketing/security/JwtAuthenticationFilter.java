@@ -6,6 +6,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -33,6 +35,7 @@ import java.util.Set;
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
     private static final String ACTUATOR_PATH = "/actuator/";
     private static final String AUTH_HEADER = "Authorization";
     private static final String BEARER_PREFIX = "Bearer ";
@@ -72,30 +75,38 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         String token = authHeader.substring(BEARER_PREFIX.length());
-        Claims claims = identityTokenVerifier.verify(token).orElse(null);
+        IdentityTokenVerifier.Verification verification = identityTokenVerifier.verifyToken(token);
+        Claims claims = verification.claims();
         // null permissions marks a token that did not come from identity-service.
         Set<String> permissions = null;
         if (claims != null) {
             // Deactivated, offboarded and deleted users and signed-out sessions, from identity's
             // feed: direct calls and forwarded tokens never pass the gateway's own check.
             Object sessionId = claims.get("sessionId");
-            if (revocationRegistry.isRevoked(claims.getSubject(),
+            TokenRevocationRegistry.Status revocation = revocationRegistry.check(claims.getSubject(),
                     claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant(),
-                    sessionId == null ? null : String.valueOf(sessionId))) {
-                writeUnauthorized(response, "Invalid or expired token");
+                    sessionId == null ? null : String.valueOf(sessionId));
+            if (revocation != TokenRevocationRegistry.Status.NOT_REVOKED) {
+                reject(request, response, revocation == TokenRevocationRegistry.Status.REVOKED
+                        ? TokenRejectionReason.REVOKED : TokenRejectionReason.REVOCATIONS_NOT_LOADED,
+                        claims.getSubject());
                 return;
             }
             permissions = identityTokenVerifier.extractPermissions(claims);
         } else if (!localTokensEnabled) {
             // This service's own HS256 tokens are signed with the platform JWT_SECRET, which every
             // service holds; only the integration tests mint them. Off unless a profile turns it on.
-            writeUnauthorized(response, "Invalid or expired token");
+            reject(request, response, verification.reason(), null);
             return;
         } else {
             try {
                 claims = jwtService.parseToken(token);
             } catch (JwtException | IllegalArgumentException ex) {
-                writeUnauthorized(response, "Invalid or expired token");
+                // An identity token that merely expired should be reported as expired, not as a
+                // signature mismatch against the local key.
+                TokenRejectionReason reason = verification.reason() == TokenRejectionReason.BAD_SIGNATURE
+                        ? TokenRejectionReason.fromParseFailure(ex) : verification.reason();
+                reject(request, response, reason, null);
                 return;
             }
         }
@@ -113,6 +124,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         SecurityContextHolder.getContext().setAuthentication(authentication);
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * Logs why a token was refused and answers 401. The token is never logged; the subject (a user
+     * id, not a credential) is included only once the signature has been verified.
+     */
+    private void reject(HttpServletRequest request, HttpServletResponse response,
+                        TokenRejectionReason reason, String verifiedSubject) throws IOException {
+        if (verifiedSubject == null) {
+            LOGGER.warn("Rejected bearer token: reason={} method={} path={}",
+                    reason.code(), request.getMethod(), request.getRequestURI());
+        } else {
+            LOGGER.warn("Rejected bearer token: reason={} method={} path={} subject={}",
+                    reason.code(), request.getMethod(), request.getRequestURI(), verifiedSubject);
+        }
+        writeUnauthorized(response, "Invalid or expired token");
     }
 
     private void writeUnauthorized(HttpServletResponse response, String message) throws IOException {

@@ -26,7 +26,7 @@ import java.util.Set;
  * ignored for identity tokens, so a custom role someone happens to call "agent"
  * in the roles UI gains nothing by its name.
  *
- * <p>Tokens without a {@code permissions} claim (the HMAC tokens the integration
+ * <p>Tokens without a {@code permissions} claim (the RS256 tokens the integration
  * tests mint) keep the original behaviour: their {@code roles} claim already
  * holds helpdesk role names. Unknown strings are ignored rather than fatal.
  */

@@ -20,9 +20,8 @@ import java.util.Set;
  * app sends through the API gateway - with {@code app.security.jwt.public-key}, the
  * same key the gateway and every other service verify with.
  *
- * <p>Kept apart from {@link JwtService}, which signs and verifies this service's own
- * HS256 tokens (used by the integration tests). {@link JwtAuthenticationFilter} tries
- * this verifier first and falls back to {@link JwtService}.
+ * <p>This is the only verifier: tokens minted by {@link JwtService} (integration tests,
+ * signed with {@code JWT_PRIVATE_KEY}) are verified here too. There is no HS256 fallback.
  */
 @Component
 public class IdentityTokenVerifier {

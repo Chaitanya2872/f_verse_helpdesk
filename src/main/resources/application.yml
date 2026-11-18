@@ -4,7 +4,7 @@ server:
   port: ${SERVER_PORT:8096}
 
 spring:
-  # Local secrets (JWT_SECRET, INTERNAL_SERVICE_SECRET, ...) may live in a git-ignored .env next to the service
+  # Local secrets (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, INTERNAL_SERVICE_SECRET, ...) may live in a git-ignored .env next to the service
   # or higher up, as in notifications-service. Real environment variables still take precedence.
   config:
     import:
@@ -45,6 +45,9 @@ app:
       # No default: the dev key lives only in application-dev.yml, so production cannot silently
       # fall back to it (RequiredSecurityConfigValidator refuses to start without JWT_PUBLIC_KEY).
       public-key: ${JWT_PUBLIC_KEY:}
+      # RS256 private key of the same pair (PKCS#8, base64), as identity-service uses. Optional:
+      # only JwtService needs it, to mint tokens (the integration tests). There is no JWT_SECRET.
+      private-key: ${JWT_PRIVATE_KEY:}
     revocation:
       # Base URL of identity-service, polled for /internal/auth/token-revocations.
       # In Docker Compose: http://identity-service:8081. No default outside the dev profile.
@@ -54,9 +57,7 @@ app:
     startup-check:
       enabled: true
   jwt:
-    # The service's own HS256 tokens (JwtService) - only the integration tests
-    # mint these now. 8 hours. app.jwt.secret has no default here - each profile
-    # (dev/test/prod) must supply its own signing key.
+    # Lifetime of tokens JwtService mints (RS256, signed with JWT_PRIVATE_KEY). 8 hours.
     expiration-ms: 28800000
   attachments:
     storage-dir: ${HELPDESK_ATTACHMENTS_DIR:./data/attachments}

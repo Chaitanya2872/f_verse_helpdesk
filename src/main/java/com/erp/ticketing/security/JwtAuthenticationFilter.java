@@ -1,7 +1,6 @@
 package com.erp.ticketing.security;
 
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -21,11 +20,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Authenticates each request from a {@code Bearer} JWT - normally an
- * identity-service access token forwarded by the API gateway (see
- * {@link IdentityTokenVerifier}), with this service's own HS256 tokens
- * ({@link JwtService}) accepted as a fallback - instead of trusting identity
- * headers. Helpdesk roles are resolved by {@link UserRoleResolver}.
+ * Authenticates each request from a {@code Bearer} RS256 JWT - an
+ * identity-service access token forwarded by the API gateway, verified with
+ * {@code JWT_PUBLIC_KEY} by {@link IdentityTokenVerifier} - instead of trusting
+ * identity headers. Helpdesk roles are resolved by {@link UserRoleResolver}.
  * On success, the resolved identity is published as an
  * {@link ErpUserPrincipal} - kept as the principal type so the rest of the
  * app (controllers/services taking {@code @AuthenticationPrincipal
@@ -75,41 +73,31 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         String token = authHeader.substring(BEARER_PREFIX.length());
+        // Every token is RS256, verified with JWT_PUBLIC_KEY - there is no symmetric fallback.
         IdentityTokenVerifier.Verification verification = identityTokenVerifier.verifyToken(token);
         Claims claims = verification.claims();
-        // null permissions marks a token that did not come from identity-service.
-        Set<String> permissions = null;
-        if (claims != null) {
-            // Deactivated, offboarded and deleted users and signed-out sessions, from identity's
-            // feed: direct calls and forwarded tokens never pass the gateway's own check.
-            Object sessionId = claims.get("sessionId");
-            TokenRevocationRegistry.Status revocation = revocationRegistry.check(claims.getSubject(),
-                    claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant(),
-                    sessionId == null ? null : String.valueOf(sessionId));
-            if (revocation != TokenRevocationRegistry.Status.NOT_REVOKED) {
-                reject(request, response, revocation == TokenRevocationRegistry.Status.REVOKED
-                        ? TokenRejectionReason.REVOKED : TokenRejectionReason.REVOCATIONS_NOT_LOADED,
-                        claims.getSubject());
-                return;
-            }
-            permissions = identityTokenVerifier.extractPermissions(claims);
-        } else if (!localTokensEnabled) {
-            // This service's own HS256 tokens are signed with the platform JWT_SECRET, which every
-            // service holds; only the integration tests mint them. Off unless a profile turns it on.
+        if (claims == null) {
             reject(request, response, verification.reason(), null);
             return;
-        } else {
-            try {
-                claims = jwtService.parseToken(token);
-            } catch (JwtException | IllegalArgumentException ex) {
-                // An identity token that merely expired should be reported as expired, not as a
-                // signature mismatch against the local key.
-                TokenRejectionReason reason = verification.reason() == TokenRejectionReason.BAD_SIGNATURE
-                        ? TokenRejectionReason.fromParseFailure(ex) : verification.reason();
-                reject(request, response, reason, null);
-                return;
-            }
         }
+        // Deactivated, offboarded and deleted users and signed-out sessions, from identity's
+        // feed: direct calls and forwarded tokens never pass the gateway's own check.
+        Object sessionId = claims.get("sessionId");
+        TokenRevocationRegistry.Status revocation = revocationRegistry.check(claims.getSubject(),
+                claims.getIssuedAt() == null ? null : claims.getIssuedAt().toInstant(),
+                sessionId == null ? null : String.valueOf(sessionId));
+        if (revocation != TokenRevocationRegistry.Status.NOT_REVOKED) {
+            reject(request, response, revocation == TokenRevocationRegistry.Status.REVOKED
+                    ? TokenRejectionReason.REVOKED : TokenRejectionReason.REVOCATIONS_NOT_LOADED,
+                    claims.getSubject());
+            return;
+        }
+        // Tokens minted by JwtService (integration tests) carry helpdesk role names in "roles" and no
+        // "permissions" claim; null permissions makes UserRoleResolver read those names. That is only
+        // honoured where a profile enables it - elsewhere a token without permissions gets no role.
+        Set<String> permissions = claims.containsKey("permissions") || !localTokensEnabled
+                ? identityTokenVerifier.extractPermissions(claims)
+                : null;
 
         String subject = claims.getSubject();
         String email = claims.get("email", String.class);

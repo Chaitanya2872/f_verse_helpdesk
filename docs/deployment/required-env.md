@@ -16,9 +16,12 @@ logs or tickets.
 | `JWT_PUBLIC_KEY` | yes | Same as api-gateway | Startup fails (since this release) |
 | `INTERNAL_SERVICE_SECRET` | yes | Same as identity-service and api-gateway | Startup fails |
 | `IDENTITY_SERVICE_URL` | yes | `http://identity-service:8081` in Compose | Startup fails |
-| `SPRING_PROFILES_ACTIVE` | yes | `prod` | Defaults to `dev`, which accepts local HS256 tokens and turns fail-closed revocation off |
-| `JWT_SECRET` | yes (prod profile) | Platform secret | Startup fails (`app.jwt.secret` unresolved) |
+| `SPRING_PROFILES_ACTIVE` | yes | `prod` | Defaults to `dev`, which honours role names in tokens without a `permissions` claim and turns fail-closed revocation off |
+| `JWT_PRIVATE_KEY` | no | Same as identity-service | Only needed to mint tokens (integration tests); verification is unaffected |
 | `HELPDESK_DB_URL`, `HELPDESK_DB_USERNAME`, `HELPDESK_DB_PASSWORD` | yes (prod profile) | | Startup fails |
+
+`JWT_SECRET` is no longer read: helpdesk-service signs and verifies RS256 only, like the other
+services. It can be removed from the service's environment.
 
 Before this release, a missing `JWT_PUBLIC_KEY` / `INTERNAL_SERVICE_SECRET` / `IDENTITY_SERVICE_URL`
 let the service start "healthy" and answer every request with 401 `Invalid or expired token`.

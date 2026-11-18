@@ -17,8 +17,6 @@ spring:
       ddl-auto: validate
 
 app:
-  jwt:
-    secret: 78f350476697dc79458d7b8d3d826b9754af8ef005af9e411185e48c7d0466e6
   sla:
     monitoring:
       enabled: false
@@ -39,9 +37,13 @@ eureka:
   client:
     enabled: false
 
-# Helpdesk's own HS256 tokens (JwtService) are accepted only where a profile says so; production
-# accepts identity tokens alone. Revocations are not polled outside a running identity-service.
+# Tokens without a "permissions" claim (minted by JwtService) may carry helpdesk role names only where a
+# profile says so; production derives roles from identity permissions alone. Revocations are not polled outside a running identity-service.
 app.jwt.local-tokens-enabled: true
 app.security.revocation.fail-closed: false
 # Tests mint local tokens and run without identity-service, so the production startup check is off.
 app.security.startup-check.enabled: false
+# identity-service's DEV RS256 key pair (see identity-service application-local.yml): the tests mint
+# tokens with the private key and the filter verifies them with the public key, as in every service.
+app.security.jwt.private-key: ${JWT_PRIVATE_KEY:MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDPjCgOOmOQAL4NxenVwRYbTG5D8R3CF/NWnDg0QVHQCR9SiyPC8mS/ZewFHwdASFlDgMghfXFL/6JhUsjJd/M/2OHX1oVJxulBhIqYRztwECTzXsNDjHxqZYELkMBW7Fr/YsLzWDrKlg8s2QL65VfcsYV6zCwuxqkTDdGsWVKU4I7ZHs9YybA2bBKKzFB+NlzseS7sh2S3LdC9y3TInreVJoj7mzVZcxnFVCIrjKCh6SnL8wyj5+6SfuPVdx1bs/qroGXFuMnJt41G1Atp7NxPJFOVGnCY7dTeQoLWWcEffK3zdjDOsO2hbrXzS6z3f4nXl1/emh2eghs8kd9a567BAgMBAAECggEABhAfmW7OOsYyxx85egOWfDyq2fRAvMtLUgPlRm2EENI7ZoNnC4peNBMrpmimIxQZ+3VXI1dRSHmSykoLUItfAUX6Lv52zVVwufe/vrwR+e+WzL8/cAk6FzeY4fgcDk4ASIafkFFLAmEI13QNeLvbabiL4C73uXQXO1XDgsfnOC8brdeynPmxhAtRhUKh8O53juIBN/bD2xcc80V5dTdVcd/c2bRGH29/6UGS30D7iiUtjzEedTTrVs3k6aHhiQwfwgs1mnYiuaysksGoHybfTb9sXsrR4e1lE41WXz6r+yrLCMCmPIKfo7pnIUROsLrQsePBvns7TyeplFsMSbjFMwKBgQD2amgio4wXhLYFfVGD0e3p1zCAYBS11ER4tuIGSb0St2/6A0+C/LKbDNjtm7XdfMx0sdI1p31lz6SOwlcENOcKzz/ukJMaeSERsXLiBBNd4lIxfWcVEhF6kurij2M/iI/DSuDsmKzLLLpp2jRax6ZCe2ZKyut3JkFQJntouk+5kwKBgQDXnrv2XNAmmjMAElcA4XKSU3QgR1GcyYJxlQ/6Z4JIX5PUOd3wT9T5Xwbr+hiUD0mKuzuQI77E+HEiqPtwAorF/DSnY7ckrSIMrNDl5YyuAxZySyfvUTQR9fnVjVvVQCx4yv2RE5pYS+pFUpj2/MSyTkqrz2xa3khRInCAjZka2wKBgFxHxw3Jz6nzEjOGFePW11EuPESnNrpNbwMCAi02qi77MV0gpkM4nS6Bpi99k6MJnIvLGBztx4E8PLUVxH6XzTp4GMofrGdKm37DxHEt847CNePAwbzbUl5j7MDBz/o4Cxao0QjpuDQyYPFJPTgN8o6NJea2jW3GjskUUD0NINQvAoGBALkfDIvBNejenQjjthUIesCMq/gGo1g0Xi08aKJ5eg6/GIGuSRFIyTZs0tmJOM7trRtSExp2xhQApcm3QWDyncjL9zz7zMLNbp1pRlULV1QTTJNGWXwLwOPmxuAFZKHbXhM7XKbRKMPEMdfgyXnMnOfldhC6nnIJxBb8tZB5gcjfAoGAcgnSF+NAsyOoV+TrcWXgp36WkzOA0ZuHcAKGkBMyezk+yUbu90nQtZP9cs1sDlO3b8Y5a/5ZZ+mGnj4K3ug7B1WNGyKuIjQzzVuJWWqTLR3idCAJSojt7EJDcqx6eQK+acOmP0QBsT/rtLMvAYCqwKfVLTUCh6z3eHWJC8qjc70=}
+app.security.jwt.public-key: ${JWT_PUBLIC_KEY:MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz4woDjpjkAC+DcXp1cEWG0xuQ/EdwhfzVpw4NEFR0AkfUosjwvJkv2XsBR8HQEhZQ4DIIX1xS/+iYVLIyXfzP9jh19aFScbpQYSKmEc7cBAk817DQ4x8amWBC5DAVuxa/2LC81g6ypYPLNkC+uVX3LGFeswsLsapEw3RrFlSlOCO2R7PWMmwNmwSisxQfjZc7Hku7Idkty3Qvct0yJ63lSaI+5s1WXMZxVQiK4ygoekpy/MMo+fukn7j1XcdW7P6q6BlxbjJybeNRtQLaezcTyRTlRpwmO3U3kKC1lnBH3yt83YwzrDtoW6180us93+J15df3podnoIbPJHfWueuwQIDAQAB}

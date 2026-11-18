@@ -54,11 +54,9 @@ class JwtAuthenticationFilterRejectionTest {
     private static JwtAuthenticationFilter filter(TokenRevocationRegistry registry) {
         IdentityTokenVerifier verifier = new IdentityTokenVerifier(
                 Base64.getEncoder().encodeToString(trusted.getPublic().getEncoded()));
-        // Local HS256 tokens off, as in production; JwtService only extracts roles here, so it gets a
-        // throwaway random secret generated per run.
-        byte[] randomSecret = new byte[48];
-        new java.security.SecureRandom().nextBytes(randomSecret);
-        JwtService jwtService = new JwtService(Base64.getEncoder().encodeToString(randomSecret), 60000);
+        // Role names from the "roles" claim off, as in production; JwtService only extracts roles here.
+        JwtService jwtService = new JwtService(
+                Base64.getEncoder().encodeToString(trusted.getPrivate().getEncoded()), 60000);
         return new JwtAuthenticationFilter(verifier, jwtService, new UserRoleResolver(), registry, false);
     }
 
